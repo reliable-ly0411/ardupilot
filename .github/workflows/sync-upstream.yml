@@ -2,7 +2,7 @@ name: Sync upstream
 
 on:
   schedule:
-    - cron: "17 */6 * * *"
+    - cron: "17 2 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -25,5 +25,9 @@ jobs:
           git remote add upstream https://github.com/ArduPilot/ardupilot.git
           git fetch upstream master
           git checkout master
-          git merge --no-edit upstream/master
+          if git merge-base --is-ancestor upstream/master master; then
+            echo "Already up to date"
+            exit 0
+          fi
+          git merge --no-ff -m "Sync upstream ArduPilot master" upstream/master
           git push origin master
