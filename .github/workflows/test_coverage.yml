@@ -77,6 +77,7 @@ jobs:
           key-suffix: ${{ matrix.toolchain }}-${{ matrix.config }}
 
       - name: Coveralls
+        if: github.repository == 'ArduPilot/ardupilot'
         uses: coverallsapp/github-action@master
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -91,6 +92,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Coveralls Finished
+        if: github.repository == 'ArduPilot/ardupilot'
         uses: coverallsapp/github-action@master
         with:
           github-token: ${{ secrets.github_token }}
