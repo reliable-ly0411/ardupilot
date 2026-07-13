@@ -575,11 +575,12 @@ class WaitAndMaintain(object):
 
 
 class WaitAndMaintainLocation(WaitAndMaintain):
-    def __init__(self, test_suite, target, accuracy=5, height_accuracy=1, **kwargs):
+    def __init__(self, test_suite, target, accuracy=5, height_accuracy=1, location_source=None, **kwargs):
         super(WaitAndMaintainLocation, self).__init__(test_suite, **kwargs)
         self.target = target
         self.height_accuracy = height_accuracy
         self.accuracy = accuracy
+        self.location_source = location_source
 
     def announce_start_text(self):
         t = self.target
@@ -593,7 +594,9 @@ class WaitAndMaintainLocation(WaitAndMaintain):
         return self.loc
 
     def get_current_value(self):
-        return self.test_suite.mav.location()
+        if self.location_source is None:
+            return self.test_suite.mav.location()
+        return self.test_suite.get_mav_location(self.location_source)
 
     def horizontal_error(self, value):
         return self.test_suite.get_distance(value, self.target)
@@ -3697,8 +3700,7 @@ class TestSuite(abc.ABC):
             raise NotAchievedException("Expected GPS to be OK")
         self.assert_sensor_state(mavutil.mavlink.MAV_SYS_STATUS_SENSOR_GPS, True, True, True)
         self.set_parameter("SIM_GPS1_TYPE", 0)
-        self.delay_sim_time(10, reason="GPS disable to take effect")
-        self.assert_sensor_state(mavutil.mavlink.MAV_SYS_STATUS_SENSOR_GPS, False, False, False)
+        self.wait_sensor_state(mavutil.mavlink.MAV_SYS_STATUS_SENSOR_GPS, False, False, False, timeout=10)
         m = self.poll_message("HIGH_LATENCY2")
         self.progress(self.dump_message_verbose(m))
         if (m.failure_flags & mavutil.mavlink.HL_FAILURE_FLAG_GPS) == 0:
@@ -3706,7 +3708,7 @@ class TestSuite(abc.ABC):
 
         self.start_subtest("HIGH_LATENCY2 location")
         self.set_parameter("SIM_GPS1_TYPE", 1)
-        self.delay_sim_time(10, reason="GPS to re-enable")
+        self.wait_sensor_state(mavutil.mavlink.MAV_SYS_STATUS_SENSOR_GPS, True, True, True, timeout=10)
         m = self.poll_message("HIGH_LATENCY2")
         self.progress(self.dump_message_verbose(m))
         loc = mavutil.location(m.latitude, m.longitude, m.altitude, 0)
@@ -4845,7 +4847,7 @@ class TestSuite(abc.ABC):
         # if len(pre) != len(post):
         #     raise NotAchievedException("Rotation happened on arming?!")
         # size_a = os.path.getsize(current_log_filepath)
-        # self.delay_sim_time(5)
+        # self.delay_sim_time(5, "rotate to occur")
         # size_b = os.path.getsize(current_log_filepath)
         # if size_b <= size_a:
         #     raise NotAchievedException("Log not growing")
@@ -6267,6 +6269,34 @@ class TestSuite(abc.ABC):
 
     def plane_CPUFailsafe(self):
         '''In lockup Plane should copy RC inputs to RC outputs'''
+        def expected_output(channel, rc_value, params):
+            rc_min = params["RC%u_MIN" % channel]
+            rc_max = params["RC%u_MAX" % channel]
+            rc_trim = params["RC%u_TRIM" % channel]
+            servo_min = params["SERVO%u_MIN" % channel]
+            servo_max = params["SERVO%u_MAX" % channel]
+            servo_trim = params["SERVO%u_TRIM" % channel]
+
+            if rc_value < rc_trim:
+                output = servo_trim - (rc_trim - rc_value) * (servo_trim - servo_min) / (rc_trim - rc_min)
+            else:
+                output = servo_trim + (rc_value - rc_trim) * (servo_max - servo_trim) / (rc_max - rc_trim)
+            return int(output)
+
+        channel = 2
+        low_rc = 1200
+        high_rc = 1700
+        params = self.get_parameters([
+            "RC%u_MIN" % channel,
+            "RC%u_MAX" % channel,
+            "RC%u_TRIM" % channel,
+            "SERVO%u_MIN" % channel,
+            "SERVO%u_MAX" % channel,
+            "SERVO%u_TRIM" % channel,
+        ])
+        low_output = expected_output(channel, low_rc, params)
+        high_output = expected_output(channel, high_rc, params)
+
         # customising the SITL commandline ensures the process will
         # get stopped/started at the end of the test
         self.customise_SITL_commandline([])
@@ -6292,12 +6322,12 @@ class TestSuite(abc.ABC):
         self.context_pop()
         # Different scaling for RC input and servo output means the
         # servo output value isn't the rc input value:
-        self.progress("Setting RC to 1200")
-        self.rc_queue.put({2: 1200})
-        self.progress("Waiting for servo of 1260")
-        self.cpufailsafe_wait_servo_channel_value(2, 1260)
-        self.rc_queue.put({2: 1700})
-        self.cpufailsafe_wait_servo_channel_value(2, 1660)
+        self.progress("Setting RC to %u" % low_rc)
+        self.rc_queue.put({channel: low_rc})
+        self.progress("Waiting for servo of %u" % low_output)
+        self.cpufailsafe_wait_servo_channel_value(channel, low_output)
+        self.rc_queue.put({channel: high_rc})
+        self.cpufailsafe_wait_servo_channel_value(channel, high_output)
         self.reset_SITL_commandline()
 
     def mavproxy_arm_vehicle(self, mavproxy):
@@ -7574,14 +7604,11 @@ class TestSuite(abc.ABC):
     #################################################
     # WAIT UTILITIES
     #################################################
-    def delay_sim_time(self, seconds_to_wait, reason=None):
+    def delay_sim_time(self, seconds_to_wait, reason):
         """Wait some second in SITL time."""
         tstart = self.get_sim_time()
         tnow = tstart
-        r = "Delaying %f seconds"
-        if reason is not None:
-            r += " for %s" % reason
-        self.progress(r % (seconds_to_wait,))
+        self.progress("Delaying %f seconds for %s" % (seconds_to_wait, reason))
         while tstart + seconds_to_wait > tnow:
             tnow = self.get_sim_time(drain_mav=False)
 
@@ -8204,7 +8231,10 @@ class TestSuite(abc.ABC):
             lat = m.lat * 1e-7
             lon = m.lon * 1e-7
             alt_m = m.alt * 0.001
-
+        elif m_type == "SIMSTATE":
+            lat = m.lat * 1e-7
+            lon = m.lng * 1e-7
+            alt_m = 0  # not available in SIMSTATE
         if lat == 0 and lon == 0:
             raise ValueError(f"Bad lat/lng {lat=} {lon=}")
 
@@ -8556,12 +8586,12 @@ class TestSuite(abc.ABC):
 
             # toggle ch12 to recover override-enable after a prior clear-by-pilot
             self.set_rc(12, 1000)
-            self.delay_sim_time(0.2)
+            self.delay_sim_time(0.2, "allow aux switch change to register")
             self.set_rc(12, 2000)
-            self.delay_sim_time(0.5)
+            self.delay_sim_time(0.5, "allow aux switch change to register")
 
             self.set_rc_from_map({1: 1500, 2: 1500, 3: 1500, 4: 1500})
-            self.delay_sim_time(0.5)
+            self.delay_sim_time(0.5, "let RC inputs settle")
 
             self._rc_overrides_send_single(override_ch, override_pwm)
             self.wait_rc_channel_value(override_ch, override_pwm, timeout=5)
@@ -8578,13 +8608,13 @@ class TestSuite(abc.ABC):
                 self.wait_rc_channel_value(override_ch, 1500, timeout=3)
             else:
                 # re-send override since it may have just expired
-                self.delay_sim_time(1.0)
+                self.delay_sim_time(1.0, "allow override to expire")
                 self._rc_overrides_send_single(override_ch, override_pwm)
                 self.wait_rc_channel_value(override_ch, override_pwm, timeout=2)
         finally:
             self._rc_overrides_release_single(override_ch)
             self.set_rc_from_map({1: 1500, 2: 1500, 3: 1500, 4: 1500})
-            self.delay_sim_time(0.2)
+            self.delay_sim_time(0.2, "let RC inputs settle")
             self.context_pop()
 
     def send_do_reposition(self,

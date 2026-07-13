@@ -124,6 +124,13 @@ const AP_Param::GroupInfo SIM::var_info[] = {
     // @Units: Ah
     // @User: Advanced
     AP_GROUPINFO("BATT_CAP_AH",   20, SIM,  batt_capacity_ah,  0),
+    // @Param: BATT_RES_OHM
+    // @DisplayName: Simulated battery internal resistance
+    // @Description: Simulated battery internal resistance, used to model voltage sag under load (sag = current * resistance) and temperature growth. A negative value implies "use previous resistance", which is the default in order that a model-provided resistance is the default behavior. Set to 0 to disable voltage sag and temperature growth entirely.
+    // @Units: Ohm
+    // @User: Advanced
+    // @RebootRequired: True
+    AP_GROUPINFO("BATT_RES_OHM",  21, SIM,  batt_resistance,  -1),
     // 23 was SONAR_GLITCH
     // 24 was SONAR_RND
     // @Param: RC_FAIL
@@ -1279,6 +1286,27 @@ const AP_Param::GroupInfo SIM::var_ins[] = {
     // @DisplayName: Simulated Clamp Channel
     // @Description: If non-zero the vehicle will be clamped in position until the value on this servo channel passes 1800PWM
     AP_GROUPINFO("CLAMP_CH",     49, SIM, clamp_ch, 0),
+
+    // @Param: AHRS_OFF_RLL
+    // @DisplayName: Sim AHRS offset roll
+    // @Description: Roll offset applied to SIM AHRS type. For testing stepless handover between AHRS estimators.
+    // @Range: -10 10
+    // @Units: deg
+    AP_GROUPINFO("AHRS_OFF_RLL", 50, SIM, sim_ahrs_offset.roll, 0),
+
+    // @Param: AHRS_OFF_PIT
+    // @DisplayName: Sim AHRS offset pitch
+    // @Description: Pitch offset applied to SIM AHRS type. For testing stepless handover between AHRS estimators.
+    // @Range: -10 10
+    // @Units: deg
+    AP_GROUPINFO("AHRS_OFF_PIT", 51, SIM, sim_ahrs_offset.pitch, 0),
+
+    // @Param: AHRS_OFF_YAW
+    // @DisplayName: Sim AHRS offset yaw
+    // @Description: Yaw offset applied to SIM AHRS type. For testing stepless handover between AHRS estimators.
+    // @Range: -10 10
+    // @Units: deg
+    AP_GROUPINFO("AHRS_OFF_YAW", 52, SIM, sim_ahrs_offset.yaw, 0),
 
     // the IMUT parameters must be last due to the enable parameters
 #if HAL_INS_TEMPERATURE_CAL_ENABLE

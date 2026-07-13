@@ -202,6 +202,40 @@ class AutoTestRover(vehicle_test_suite.TestSuite):
         self.disarm_vehicle()
         self.progress("Loiter or Hold as throttle failsafe OK")
 
+    def CrashCheck(self):
+        """Test crash detection with FS_CRASH_CHECK 1 (hold) and 2 (hold+disarm)"""
+        self.set_parameters({
+            "CRASH_VEL_MIN": 60.0,    # unreachably high so any speed triggers
+            "CRASH_TRAT_MIN": 360.0,  # same for turn rate
+            "CRASH_TIMEOUT": 2.0,
+            "CRASH_THR_MIN": 5.0,
+        })
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 300, 0, 0),
+        ])
+
+        self.progress("Testing FS_CRASH_CHECK,1 (hold only)")
+        self.set_parameter("FS_CRASH_CHECK", 1)
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.change_mode('AUTO')
+        self.wait_statustext("Crash: Going to HOLD")
+        self.wait_mode("HOLD")
+        self.progress("Confirming still armed after hold-only crash")
+        self.assert_armed()
+        self.disarm_vehicle(force=True)
+        self.progress("FS_CRASH_CHECK,1 (hold only) OK")
+
+        self.progress("Testing FS_CRASH_CHECK,2 (hold + disarm)")
+        self.set_parameter("FS_CRASH_CHECK", 2)
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.change_mode('AUTO')
+        self.wait_statustext("Crash: Going to HOLD")
+        self.wait_mode("HOLD")
+        self.wait_disarmed()
+        self.progress("FS_CRASH_CHECK,2 (hold + disarm) OK")
+
     def PARAM_ERROR(self):
         '''test PARAM_ERROR mavlink message'''
         self.start_subtest("Non-existent parameter (get)")
@@ -927,7 +961,7 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
 
         # switch ch10 LOW to disable overrides; verify GCS overrides are now blocked
         self.set_rc(10, 1000)
-        self.delay_sim_time(0.5)  # allow debounce to complete
+        self.delay_sim_time(0.5, "allow debounce to complete")
 
         tstart = self.get_sim_time()
         while self.get_sim_time_cached() - tstart < 15:
@@ -1119,7 +1153,7 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
                 raise NotAchievedException("Value reverted after %f seconds when it should not have (got=%u) (want=%u)" % (delta, m_value, ch_override_value))  # noqa
         self.set_parameter("RC_OVERRIDE_TIME", old)
 
-        self.delay_sim_time(10, reason="RC override to revert")
+        self.wait_rc_channel_value(ch, 1000, timeout=15)
 
         self.start_subtest("Checking higher-channel semantics")
         self.context_push()
@@ -1194,7 +1228,7 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
         self.reboot_sitl()
 
         self.set_rc(12, 2000)
-        self.delay_sim_time(0.2)
+        self.delay_sim_time(0.2, "allow aux switch change to register")
 
         bit_clear_by_rc = 1 << 14
 
@@ -3708,7 +3742,6 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
         self.start_subsubtest("wp slope")
         mavproxy.send('wp slope\n')
         mavproxy.expect("WP3: slope 0.1")
-        self.delay_sim_time(5, reason="waypoint slope calculation")
         self.end_subsubtest("wp slope")
 
         if not self.mavproxy_can_do_mision_item_protocols():
@@ -4033,11 +4066,6 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
                         self.progress("Seemed to have stopped at stopping point")
                         return
 
-    def assert_fence_breached(self):
-        m = self.assert_receive_message('FENCE_STATUS', timeout=10)
-        if m.breach_status != 1:
-            raise NotAchievedException("Expected to be breached")
-
     def wait_fence_not_breached(self, timeout=5):
         tstart = self.get_sim_time()
         while True:
@@ -4062,7 +4090,7 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
         self.set_parameters({
             "FENCE_TYPE": 2,    # circle only
         })
-        self.delay_sim_time(5, reason="fence breaches to clear") # let breaches clear
+        self.wait_fence_not_breached()
         # FIXME: should we allow this?
         self.progress("Ensure we can arm with no poly in place")
         self.change_mode("GUIDED")
@@ -4123,9 +4151,7 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
         ]
         self.upload_using_mission_protocol(mavutil.mavlink.MAV_MISSION_TYPE_FENCE,
                                            items)
-        self.delay_sim_time(5, reason="fence breach check") # ArduPilot only checks for breaches @1Hz
-        self.drain_mav()
-        self.assert_fence_breached()
+        self.wait_message_field_values('FENCE_STATUS', {'breach_status': 1})
         try:
             self.arm_motors_with_rc_input()
         except NotAchievedException:
@@ -4179,9 +4205,7 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
         ]
         self.upload_using_mission_protocol(mavutil.mavlink.MAV_MISSION_TYPE_FENCE,
                                            items)
-        self.delay_sim_time(5, reason="fence breach check") # ArduPilot only checks for breaches @1Hz
-        self.drain_mav()
-        self.assert_fence_breached()
+        self.wait_message_field_values('FENCE_STATUS', {'breach_status': 1})
         try:
             self.arm_motors_with_rc_input()
         except NotAchievedException:
@@ -4215,9 +4239,7 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
                 self.offset_location_ne(here, 50, -50), # tl,
             ]),
         ])
-        self.delay_sim_time(5, reason="fence breach check") # ArduPilot only checks for breaches @1Hz
-        self.drain_mav()
-        self.assert_fence_breached()
+        self.wait_message_field_values('FENCE_STATUS', {'breach_status': 1})
         try:
             self.arm_motors_with_rc_input()
         except NotAchievedException:
@@ -4251,9 +4273,7 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
                 self.offset_location_ne(here, 50, -50), # tl,
             ]),
         ])
-        self.delay_sim_time(5, reason="fence breach check") # ArduPilot only checks for breaches @1Hz
-        self.drain_mav()
-        self.assert_fence_breached()
+        self.wait_message_field_values('FENCE_STATUS', {'breach_status': 1})
         try:
             self.arm_motors_with_rc_input()
         except NotAchievedException:
@@ -4519,7 +4539,6 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
             target_system=target_system,
             target_component=target_component)
 
-        self.delay_sim_time(5, reason="RTL to complete")
         self.progress("Drive outside bottom circle")
         fence_middle = self.offset_location_ne(here, 150, 0)
         self.drive_somewhere_breach_boundary_and_rtl(
@@ -4554,7 +4573,6 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
             target_system=target_system,
             target_component=target_component)
 
-        self.delay_sim_time(5, reason="RTL to complete")
         self.progress("Drive outside circle")
         fence_middle = self.offset_location_ne(here, 150, 0)
         self.drive_somewhere_breach_boundary_and_rtl(
@@ -5839,13 +5857,10 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
         # Wait for the rover to reach and begin the circle waypoint
         self.wait_current_waypoint(2, timeout=60)
 
-        self.delay_sim_time(10, reason="circle waypoint traversal")
-
-        # Check that POSITION_TARGET_GLOBAL_INT reports the correct AMSL
-        # altitude
-        self.assert_received_message_field_values("POSITION_TARGET_GLOBAL_INT", {
+        # Wait for POSITION_TARGET_GLOBAL_INT to report the correct AMSL altitude
+        self.wait_message_field_values("POSITION_TARGET_GLOBAL_INT", {
             "alt": home_alt_amsl,
-        }, epsilon=10)
+        }, epsilon=10, timeout=30)
 
         self.disarm_vehicle()
 
@@ -6063,8 +6078,6 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
 
         # Set SIM parameter after reboot when AIS sim is loaded
         self.set_parameter("SIM_AIS_COUNT", 5)
-
-        self.delay_sim_time(10, reason="AIS simulation to initialise")
 
         m = self.assert_receive_message('AIS_VESSEL', timeout=60)
 
@@ -6861,7 +6874,6 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
                 self.offset_location_ne(here, 50, -50), # tl,
             ]),
         ])
-        self.delay_sim_time(5, reason="fence to be uploaded")
         self.wait_ready_to_arm()
 
         self.reboot_sitl()
@@ -7204,7 +7216,7 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
         self.context_clear_collection('STATUSTEXT')
         self.set_parameter("AHRS_OPTIONS", 0)
         self.reboot_sitl()
-        self.delay_sim_time(60)
+        self.delay_sim_time(60, "allow time for AHRS to select an estimator")
         if self.statustext_in_collections("AHRS: EKF3 active"):
             raise NotAchievedException("AHRS used EKF3 without EKF height data")
 
@@ -7599,6 +7611,7 @@ return update()
             self.SafetySwitch,
             self.EnterModeOnSafetySwitch,
             self.ThrottleFailsafe,
+            self.CrashCheck,
             self.DriveEachFrame,
             self.AP_ROVER_AUTO_ARM_ONCE_ENABLED,
             self.GPSAntennaPositionOffset,
