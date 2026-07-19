@@ -16,6 +16,7 @@ permissions:
 
 jobs:
   build:
+    if: github.repository == 'ArduPilot/ardupilot' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       actions: write  # save-ccache prunes the previous cache entry
@@ -87,7 +88,7 @@ jobs:
 
 
   finish:
-    if: always()
+    if: always() && (github.repository == 'ArduPilot/ardupilot' || github.event_name == 'workflow_dispatch')
     needs: build
     runs-on: ubuntu-22.04
     steps:
