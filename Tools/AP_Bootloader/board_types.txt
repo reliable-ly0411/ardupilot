@@ -15,6 +15,7 @@ TARGET_HW_PX4_FMU_V6C                  56
 TARGET_HW_ARK_FMU_V6X                  57
 TARGET_HW_ARK_PI6X                     58
 TARGET_HW_ARK_FPV                      59
+TARGET_HW_ARK_FMU_V6S                  61
 TARGET_HW_MINDPX_V2                    88
 TARGET_HW_PX4_FLOW_V1                   6
 TARGET_HW_PX4_DISCOVERY_V1             99
@@ -574,6 +575,9 @@ AP_HW_BrotherHobbyF405v3             5811
 #IDs 5820 ~ 5829 reserved for VimDrones
 AP_HW_VIMDRONES_BMS                  5820
 
+# IDs 5900-5909 reserved for NewBeeDrone PixNova
+AP_HW_NewBeeDrone_PixNova            5900
+
 # IDs 6000-6099 reserved for SpektreWorks
 AP_HW_sw-spar-f407                   6000
 AP_HW_sw-boom-f407                   6001
@@ -612,6 +616,10 @@ AP_HW_Accton_Godwit_GA1              7120
 AP_HW_Accton_Godwit_GFF4             7121
 AP_HW_Accton_Godwit_GFH7             7122
 
+# IDs 7130-7139 reserved for CoreWing
+AP_HW_CoreWingF405WingV2             7130
+AP_HW_CoreWingF405WMiniV2            7131
+
 # please fill gaps in the above ranges rather than adding past ID #7199
 
 
@@ -620,6 +628,11 @@ AP_HW_CubeOrange_ODID               10140
 AP_HW_Pixhawk6_ODID                 10053
 AP_HW_CUAV_NORA_ODID                11009
 AP_HW_CUAV_X7_PRO_ODID              11010
+AP_HW_ZeroOne_X6_ODID               15600
+AP_HW_ZeroOne_X9_ODID               15601
+AP_HW_ZeroOne_M9_ODID               15610
+AP_HW_ZeroOne_A3_ODID               15620
+AP_HW_ZeroOne_A6i_ODID              15621
 AP_HW_CUAV-7-NANO_ODID              17000
 AP_HW_CUAV-V6X-V2_ODID              17001
 AP_HW_CUAV-X25-EVO_ODID             17002

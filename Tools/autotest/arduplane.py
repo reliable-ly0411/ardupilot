@@ -1618,7 +1618,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.progress("Testing FENCE_ACTION_RTL with rally point")
 
         self.wait_ready_to_arm()
-        loc = self.home_relative_loc_ne(50, -50)
+        loc = self.home_relative_loc_neu(50, -50, 15)
         self.upload_rally_points_from_locations([loc])
         self.test_fence_breach_circle_at(loc)
 
@@ -1658,7 +1658,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.delay_sim_time(1, reason="fence upload to complete")
 
         # Grab a location for rally point, and upload it.
-        rally_loc = self.home_relative_loc_ne(-50, 50)
+        rally_loc = self.home_relative_loc_neu(-50, 50, 15)
         self.upload_rally_points_from_locations([rally_loc])
 
         return_radius = 100
@@ -1672,7 +1672,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.do_fence_enable()
         self.assert_fence_enabled()
 
-        self.takeoff(alt=50, alt_max=300)
+        self.takeoff(alt=15, alt_max=40)
         # Trigger fence breach, fly to rally location
         self.set_parameters({
             "FENCE_RET_RALLY": 1,
@@ -2040,19 +2040,19 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             if disable_airspeed_sensor:
                 self.set_parameter("ARSPD_USE", 0)
 
+            target_alt = 100
+            loc = self.home_relative_loc_neu(500, 500, target_alt)
             self.takeoff(50)
-            loc = self.mav.location()
-            self.location_offset_ne(loc, 500, 500)
             self.run_cmd_int(
                 mavutil.mavlink.MAV_CMD_DO_REPOSITION,
                 p1=0,
                 p2=mavutil.mavlink.MAV_DO_REPOSITION_FLAGS_CHANGE_MODE,
                 p5=int(loc.lat * 1e7),
                 p6=int(loc.lng * 1e7),
-                p7=100,    # alt
+                p7=target_alt,    # alt
                 frame=mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
             )
-            self.wait_location(loc, accuracy=100)
+            self.wait_location(loc, accuracy=100, height_accuracy=10)
             self.progress("Orbit with GPS and learn wind")
             # allow longer to learn wind if there is no airspeed sensor
             if disable_airspeed_sensor:
@@ -2248,6 +2248,40 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         if not self.current_onboard_log_contains_message("RFND"):
             raise NotAchievedException("No RFND messages in log")
 
+    def TemperatureSensorRangefinder(self):
+        '''Test that AP_TemperatureSensor can push temperature into a rangefinder'''
+        self.progress("Configure rangefinder and temperature sensor")
+        self.set_parameters({
+            'RNGFND1_TYPE': 100,  # SIM backend
+            'TEMP1_TYPE': 8,      # SHT3X (simulated in SITL)
+            'TEMP1_ADDR': 0x44,   # SHT3X I2C address
+            'TEMP1_BUS': 1,       # SITL registers SHT3X on I2C bus 1
+            'TEMP1_SRC': 9,       # Rangefinder
+            'TEMP1_SRC_ID': 1,    # rangefinder instance 0 (source_id-1)
+            'TEMP_LOG': 1,        # enable temperature sensor logging
+        })
+        self.reboot_sitl()
+
+        self.context_push()
+        self.set_parameter('LOG_DISARMED', 1)
+        self.delay_sim_time(15, reason="waiting for temperature data to flow")
+        self.context_pop()
+
+        self.progress("Checking RFND log for valid temperature")
+        dfreader = self.dfreader_for_current_onboard_log()
+        found_valid_temp = False
+        while True:
+            m = dfreader.recv_match(type='RFND')
+            if m is None:
+                break
+            if not math.isnan(m.Temp):
+                self.progress("RFND instance %d temperature: %.1f degC" % (m.Instance, m.Temp))
+                found_valid_temp = True
+                break
+
+        if not found_valid_temp:
+            raise NotAchievedException("No valid temperature in RFND log messages")
+
     def rc_defaults(self):
         ret = super(AutoTestPlane, self).rc_defaults()
         ret[3] = 1000
@@ -2415,9 +2449,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.set_rc(3, 1500)
         self.start_subtest("Ensure command bounced outside guided mode")
         desired_relative_alt = 33
-        loc = self.mav.location()
-        self.location_offset_ne(loc, 300, 300)
-        loc.alt += desired_relative_alt
+        loc = self.home_relative_loc_neu(300, 300, desired_relative_alt)
         self.mav.mav.mission_item_int_send(
             target_system,
             target_component,
@@ -2459,7 +2491,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         m = self.assert_receive_message('MISSION_ACK', timeout=5)
         if m.type != mavutil.mavlink.MAV_MISSION_ACCEPTED:
             raise NotAchievedException("Did not get accepted response")
-        self.wait_location(loc, accuracy=100) # based on loiter radius
+        self.wait_location(loc, accuracy=100, height_accuracy=None) # based on loiter radius
         self.wait_altitude(altitude_min=desired_relative_alt-3,
                            altitude_max=desired_relative_alt+3,
                            relative=True,
@@ -2995,9 +3027,10 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.wait_waypoint(3, 3, max_dist_to_final_wp_m=3150, timeout=600)
         self.progress("Entering guided and flying somewhere constant")
         self.change_mode("GUIDED")
+        new_alt = 280
         loc = self.mav.location()
         self.location_offset_ne(loc, 350, 0)
-        new_alt = 280
+        loc.alt = self.home_position_as_mav_location().alt + new_alt
         self.run_cmd_int(
             mavutil.mavlink.MAV_CMD_DO_REPOSITION,
             p5=int(loc.lat * 1e7),
@@ -3007,7 +3040,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         )
 
         # Resume auto when we are close to the GUIDED waypoint and start tracking maximum terrain alt.
-        self.wait_location(loc, accuracy=100)  # based on loiter radius
+        self.wait_location(loc, accuracy=100, height_accuracy=10)  # based on loiter radius
         self.change_mode('AUTO')
         self.install_message_hook_context(record_maxalt)
 
@@ -6572,7 +6605,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             dest,
             accuracy=200,
             timeout=600,
-            height_accuracy=10,
+            height_accuracy=None,  # dest.alt is relative; alt checked below
         )
         self.wait_altitude(
             dest.alt-5,
@@ -6610,7 +6643,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             dest,
             accuracy=200,
             timeout=600,
-            height_accuracy=10,
+            height_accuracy=None,  # dest.alt is above-terrain; alt checked below
         )
         self.wait_altitude(
             dest.alt-10,
@@ -8271,7 +8304,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
 
         self.start_subsubtest("ArmCk: Rally Point must be < ARM_V_RALLY_MAX meters away")
         self.progress("Currently RALLY_LIMIT_KM is %f" % self.get_parameter('RALLY_LIMIT_KM'))
-        loc = self.home_relative_loc_ne(6500, -50)
+        loc = self.home_relative_loc_neu(6500, -50, 100)
         self.upload_rally_points_from_locations([loc])
         self.wait_text("warn: Rally too far", check_context=True)
         self.set_parameter("RALLY_LIMIT_KM", 7)
@@ -8404,6 +8437,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             self.PitotBlockage,
             self.AIRSPEED_AUTOCAL,
             self.RangeFinder,
+            self.TemperatureSensorRangefinder,
             self.FenceStatic,
             self.FenceRTL,
             self.FenceRTLRally,
@@ -8769,6 +8803,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
     def disabled_tests(self):
         return {
             "LandingDrift": "Flapping test. See https://github.com/ArduPilot/ardupilot/issues/20054",
+            "TerrainRally": "Passes vacuously due to helper alt-frame bugs. See https://github.com/ArduPilot/ardupilot/issues/33740",  # noqa
             "InteractTest": "requires user interaction",
             "ClimbThrottleSaturation": "requires https://github.com/ArduPilot/ardupilot/pull/27106 to pass",
             "SoaringClimbRate": "very bad sink rate",
