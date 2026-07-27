@@ -341,6 +341,7 @@ AP_HW_SIYI-UniFC-6-PICO              1215
 AP_HW_CSKY_AVEGA6X                   1216
 AP_HW_CSKY_AVEGALITER03              1217
 AP_HW_AMOV_FLYCORE                   1218
+AP_HW_ORBITH743v2                    1219
 
 AP_HW_MUPilot                        1222
 AP_HW_HWH7                           1223
@@ -367,6 +368,7 @@ AP_HW_CBUnmanned-CM405-FC            1301
 AP_HW_CBU_H753-SOM                   1302
 
 AP_HW_KHA_ETH                        1315
+AP_HW_SAAMPIXV1_1                    1316
 
 # IDs 1330-1339 reserved for Nyxtronics
 AP_HW_NYXTRONICS_NYX405V1            1330
@@ -459,6 +461,9 @@ AP_HW_SkyRukh_Surge_H7               2815
 # IDs 4000-4009 reserved for Karshak Drones
 AP_HW_KRSHKF7_MINI                   4000
 AP_HW_KARSHAKH743VTOL                4002
+
+# IDs 4100-4109 reserved for AIUAV
+AP_HW_AIUAV_PlatFly_H7               4100
 
 # IDs 4200-4220 reserved for HAKRC
 AP_HW_HAKRC_F405                     4200
@@ -574,6 +579,9 @@ AP_HW_BrotherHobbyF405v3             5811
 
 #IDs 5820 ~ 5829 reserved for VimDrones
 AP_HW_VIMDRONES_BMS                  5820
+
+#IDs 5830 ~ 5839 reserved for CyberX
+AP_HW_CyberX-v10                     5830
 
 # IDs 5900-5909 reserved for NewBeeDrone PixNova
 AP_HW_NewBeeDrone_PixNova            5900

@@ -368,30 +368,24 @@ public:
     // true if offsets are valid
     bool getMagOffsets(uint8_t mag_idx, Vector3f &magOffsets) const;
 
-    // return the amount of yaw angle change due to the last yaw angle reset in radians
     // returns the number of times the yaw angle has been reset
-    uint16_t get_yaw_reset_count(float &yawAng) const {
-        yawAng = yaw_reset_tracker.delta();
+    uint16_t get_yaw_reset_count(void) const {
         return yaw_reset_tracker.count();
     }
 
-    // return the amount of NE position change in meters due to the last reset
-    // returns the number of times position NE has been reset
-    uint16_t get_position_NE_reset_count(Vector2f &pos) const {
-        pos = position_NE_reset_tracker.delta();
+    // returns the number of times the NE position has been reset
+    uint16_t get_position_NE_reset_count(void) const {
         return position_NE_reset_tracker.count();
     }
 
-    // return the amount of vertical position change due to the last reset in meters
-    // returns the number of times position-down has been reset
-    uint16_t get_position_D_reset_count(float &posDelta) const {
-        posDelta = position_D_reset_tracker.delta();
+    // returns the number of times the D position has been reset
+    uint16_t get_position_D_reset_count(void) const {
         return position_D_reset_tracker.count();
     }
 
     // returns a counter which is incremented each time the estimator's output resets
     uint16_t get_last_attitude_reset_count() const {
-        return attitude_reset_count;
+        return attitude_reset_tracker.count();
     }
 
     // Resets the baro so that it reads zero at the current height
@@ -1127,12 +1121,10 @@ private:
     void update_reset_counters();
     // reset counters.  These are updated if the backend changes or if
     // the backend results change (e.g. switching core)
-    uint16_t attitude_reset_count;
-    uint16_t active_estimates_attitude_reset_count;
-
-    AP_AHRS_ResetTracker<float, uint16_t> yaw_reset_tracker;
-    AP_AHRS_ResetTracker<Vector2f, uint16_t> position_NE_reset_tracker;
-    AP_AHRS_ResetTracker<float, uint16_t> position_D_reset_tracker;
+    AP_AHRS_ResetCounter<uint16_t> attitude_reset_tracker;
+    AP_AHRS_ResetCounter<uint16_t> yaw_reset_tracker;
+    AP_AHRS_ResetCounter<uint16_t> position_NE_reset_tracker;
+    AP_AHRS_ResetCounter<uint16_t> position_D_reset_tracker;
 
     // secondary estimates - used for reporting purposes.  If the
     // primary backend fails this is the backend/result pair likely to

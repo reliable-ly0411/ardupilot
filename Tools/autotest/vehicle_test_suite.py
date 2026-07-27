@@ -2476,7 +2476,6 @@ class TestSuite(abc.ABC):
                 self.customise_SITL_commandline(
                     self.valgrind_restart_customisations,
                     model=self.valgrind_restart_model,
-                    defaults_filepath=self.valgrind_restart_defaults_filepath,
                 )
             else:
                 self.stop_SITL()
@@ -3298,7 +3297,6 @@ class TestSuite(abc.ABC):
         # reboot_sitl with Valgrind active:
         if self.valgrind or self.callgrind:
             self.valgrind_restart_model = model
-            self.valgrind_restart_defaults_filepath = defaults_filepath
             self.valgrind_restart_customisations = customisations
 
     def restart_SITL_frame(self,
@@ -3402,12 +3400,8 @@ class TestSuite(abc.ABC):
             ret["LOG_REPLAY"] = 1
         return ret
 
-    def apply_default_parameter_list(self):
-        self.set_parameters(self.default_parameter_list())
-
     def apply_default_parameters(self):
-        self.apply_defaultfile_parameters()
-        self.apply_default_parameter_list()
+        self.set_parameters(self.default_parameter_list())
         self.reboot_sitl()
 
     def reset_SITL_commandline(self):
@@ -5335,6 +5329,14 @@ class TestSuite(abc.ABC):
         away'''
         self.install_test_modules()
         self.context_get().installed_modules.append("test")
+
+    def install_script_module_context(self, source, modulename, install_name=None):
+        '''installs a scripting module which will be removed when the context
+        goes away'''
+        self.install_script_module(source, modulename, install_name=install_name)
+        if install_name is None:
+            install_name = modulename
+        self.context_get().installed_modules.append(os.path.basename(install_name))
 
     def install_mavlink_module_context(self):
         '''installs mavlink module which will be removed when the context goes
@@ -9321,6 +9323,22 @@ Also, ignores heartbeats not from our target system'''
                 return x
         return None
 
+    def statustext_count_in_collections(self, text):
+        '''returns the number of statustexts in the STATUSTEXT collection which
+        contain text'''
+        c = self.context_get()
+        if "STATUSTEXT" not in c.collections:
+            raise NotAchievedException("Asked to check context but it isn't collecting!")
+        return len([x for x in c.collections["STATUSTEXT"] if text.lower() in x.text.lower()])
+
+    def assert_statustext_count_in_collections(self, text, count):
+        '''check text appears in the STATUSTEXT collection at least count times'''
+        seen = self.statustext_count_in_collections(text)
+        self.progress("Saw (%s) %u times" % (text, seen))
+        if seen < count:
+            raise NotAchievedException("Expected at least %u (%s), got %u" %
+                                       (count, text, seen))
+
     def wait_statustext(self, text, timeout=20, the_function=None, check_context=False, regex=False, wallclock_timeout=False):
         """Wait for a specific STATUSTEXT, return that statustext message"""
 
@@ -9462,14 +9480,14 @@ Also, ignores heartbeats not from our target system'''
         except OSError:
             pass
 
-    def remove_installed_script_module(self, modulename):
-        path = self.installed_script_module_path(modulename)
-        os.unlink(path)
-
     def remove_installed_modules(self, modulename):
+        # a module is either a directory of lua files or a single lua file:
         dest = os.path.join("scripts", "modules", modulename)
         try:
-            shutil.rmtree(dest)
+            if os.path.isdir(dest):
+                shutil.rmtree(dest)
+            else:
+                os.unlink(dest)
         except IOError:
             pass
         except OSError:
@@ -9826,9 +9844,6 @@ Also, ignores heartbeats not from our target system'''
         result.passed = passed
         return result
 
-    def defaults_filepath(self):
-        return None
-
     def start_mavproxy(self, sitl_rcin_port=None, master=None, options=None):
         self.start_mavproxy_count += 1
         if self.mavproxy is not None:
@@ -9902,10 +9917,6 @@ Also, ignores heartbeats not from our target system'''
             "enable_fgview": self.enable_fgview,
         }
         start_sitl_args.update(**sitl_args)
-        if ("defaults_filepath" not in start_sitl_args or
-                start_sitl_args["defaults_filepath"] is None):
-            start_sitl_args["defaults_filepath"] = self.defaults_filepath()
-
         if "model" not in start_sitl_args or start_sitl_args["model"] is None:
             start_sitl_args["model"] = self.frame
         self.progress("Starting SITL", send_statustext=False)
@@ -13296,6 +13307,155 @@ switch value'''
         if dropped != 0:
             raise NotAchievedException("Expected zero dropped log messages in %s, got %d" % (path, dropped))
 
+    def assert_ekfs_match_sim_state(self,
+                                    ekf_message_types=None,
+                                    max_roll_pitch_err_deg=5,
+                                    max_yaw_err_deg=10,
+                                    max_vel_err_ms=1.5,
+                                    max_pos_ne_err_m=5,
+                                    max_pos_d_err_m=3,
+                                    min_samples=100,
+                                    ignore_before_time_s=0,
+                                    max_violation_duration_s=2):
+        '''walk the current onboard log comparing each primary-core EKF
+        estimate message (NKF1 for EKF2, XKF1 for EKF3) against
+        simulator truth (SIM for attitude, SIM2 for velocity and
+        position), linearly interpolated to the estimate timestamps.
+        Only samples logged while armed and after ignore_before_time_s
+        are considered.
+
+        Estimates can briefly diverge from truth during aggressive
+        manoeuvres; only divergence sustained for more than
+        max_violation_duration_s fails.'''
+        import numpy as np
+        if ekf_message_types is None:
+            ekf_message_types = ['NKF1', 'XKF1']
+
+        # tolerances may be supplied as a scalar or as a dict keyed by
+        # message type, allowing per-filter tolerances:
+        def tol(spec, key):
+            if isinstance(spec, dict):
+                return spec[key]
+            return spec
+
+        # gather everything first so truth can be interpolated to the
+        # estimate timestamps:
+        dfreader = self.dfreader_for_current_onboard_log()
+        sim = []
+        sim2 = []
+        est = {}
+        for key in ekf_message_types:
+            est[key] = []
+        armed_spans = []
+        armed_at = None
+        while True:
+            m = dfreader.recv_match(type=ekf_message_types + ['SIM', 'SIM2', 'EV'])
+            if m is None:
+                break
+            m_type = m.get_type()
+            t = m.TimeUS * 1e-6
+            if m_type == 'EV':
+                if m.Id == 10 and armed_at is None:  # armed
+                    armed_at = t
+                elif m.Id == 11 and armed_at is not None:  # disarmed
+                    armed_spans.append((armed_at, t))
+                    armed_at = None
+            elif m_type == 'SIM':
+                sim.append((t, m.Roll, m.Pitch, m.Yaw))
+            elif m_type == 'SIM2':
+                sim2.append((t, m.VN, m.VE, m.VD, m.PN, m.PE, m.PD))
+            elif m.C == 0:
+                # only check each filter's primary core
+                est[m_type].append((t, m.Roll, m.Pitch, m.Yaw, m.VN, m.VE, m.VD, m.PN, m.PE, m.PD))
+        if armed_at is not None:
+            armed_spans.append((armed_at, float('inf')))
+        if len(sim) < 2 or len(sim2) < 2:
+            raise NotAchievedException("Insufficient SIM/SIM2 truth data in log")
+        sim = np.array(sim)
+        sim2 = np.array(sim2)
+        # unwrap yaw so interpolation does not glitch at the 0/360 boundary:
+        sim_yaw_unwrapped = np.degrees(np.unwrap(np.radians(sim[:, 3])))
+
+        for key in ekf_message_types:
+            rows = np.array(est[key])
+            if len(rows) == 0:
+                raise NotAchievedException("No %s messages in log" % key)
+            est_t = rows[:, 0]
+            armed = np.zeros(len(est_t), dtype=bool)
+            for (t0, t1) in armed_spans:
+                armed |= (est_t >= t0) & (est_t <= t1)
+            # restrict to samples bracketed by truth so interpolation
+            # never extrapolates:
+            armed &= (est_t >= max(sim[0, 0], sim2[0, 0])) & (est_t <= min(sim[-1, 0], sim2[-1, 0]))
+            rows = rows[armed]
+            est_t = rows[:, 0]
+            if len(est_t) < min_samples:
+                raise NotAchievedException(
+                    "Insufficient %s/truth samples compared (%u)" % (key, len(est_t)))
+
+            roll_err = np.abs(rows[:, 1] - np.interp(est_t, sim[:, 0], sim[:, 1]))
+            pitch_err = np.abs(rows[:, 2] - np.interp(est_t, sim[:, 0], sim[:, 2]))
+            yaw_err = np.abs((rows[:, 3] - np.interp(est_t, sim[:, 0], sim_yaw_unwrapped) + 180) % 360 - 180)
+            vel_err = np.sqrt(
+                (rows[:, 4] - np.interp(est_t, sim2[:, 0], sim2[:, 1]))**2 +
+                (rows[:, 5] - np.interp(est_t, sim2[:, 0], sim2[:, 2]))**2 +
+                (rows[:, 6] - np.interp(est_t, sim2[:, 0], sim2[:, 3]))**2)
+            # EKF positions are relative to the EKF origin while SIM2
+            # positions are relative to the simulation origin; remove
+            # the constant offset between the two, estimated from the
+            # first few armed samples:
+            pn_err = rows[:, 7] - np.interp(est_t, sim2[:, 0], sim2[:, 4])
+            pe_err = rows[:, 8] - np.interp(est_t, sim2[:, 0], sim2[:, 5])
+            pd_err = rows[:, 9] - np.interp(est_t, sim2[:, 0], sim2[:, 6])
+            nbase = min(10, len(est_t))
+            pn_err -= pn_err[:nbase].mean()
+            pe_err -= pe_err[:nbase].mean()
+            pd_err -= pd_err[:nbase].mean()
+            pos_ne_err = np.sqrt(pn_err**2 + pe_err**2)
+            pos_d_err = np.abs(pd_err)
+
+            att_bad = (roll_err > tol(max_roll_pitch_err_deg, key)) | (pitch_err > tol(max_roll_pitch_err_deg, key))
+            yaw_bad = yaw_err > tol(max_yaw_err_deg, key)
+            vel_bad = vel_err > tol(max_vel_err_ms, key)
+            ne_bad = pos_ne_err > tol(max_pos_ne_err_m, key)
+            d_bad = pos_d_err > tol(max_pos_d_err_m, key)
+            bad = att_bad | yaw_bad | vel_bad | ne_bad | d_bad
+            considered = est_t >= ignore_before_time_s
+            bad &= considered
+
+            # only divergence sustained for max_violation_duration_s fails:
+            run_start = None
+            for i in range(len(est_t)):
+                if not considered[i]:
+                    continue
+                if not bad[i]:
+                    run_start = None
+                    continue
+                desc = []
+                if att_bad[i]:
+                    desc.append("attitude (roll-err=%.1fdeg pitch-err=%.1fdeg)" % (roll_err[i], pitch_err[i]))
+                if yaw_bad[i]:
+                    desc.append("yaw (yaw-err=%.1fdeg)" % yaw_err[i])
+                if vel_bad[i]:
+                    desc.append("velocity (vel-err=%.1fm/s)" % vel_err[i])
+                if ne_bad[i]:
+                    desc.append("position (pos-ne-err=%.1fm)" % pos_ne_err[i])
+                if d_bad[i]:
+                    desc.append("height (pos-d-err=%.1fm)" % pos_d_err[i])
+                if run_start is None:
+                    run_start = est_t[i]
+                    self.progress("%s transient %s divergence at t=%.3f" % (key, " ".join(desc), est_t[i]))
+                elif est_t[i] - run_start > max_violation_duration_s:
+                    raise NotAchievedException(
+                        "%s diverged from truth for more than %.1fs (t=%.3f %s)" %
+                        (key, max_violation_duration_s, est_t[i], " ".join(desc)))
+
+            ncompared = int(considered.sum())
+            if ncompared < min_samples:
+                raise NotAchievedException(
+                    "Insufficient %s/truth samples compared (%u)" % (key, ncompared))
+            self.progress("Compared %u %s samples against simulator truth" % (ncompared, key))
+
     def dfreader_for_current_onboard_log(self):
         return self.dfreader_for_path(self.current_onboard_log_filepath())
 
@@ -14022,7 +14182,10 @@ switch value'''
                     self.reboot_sitl()
                     self.ahrstrim_attitude_correctness_test_attitude(11)
                 self.context_pop()
-                self.reboot_sitl()
+                # no reboot here: the restored parameters take effect at
+                # the next boot, which the following backend's
+                # customise_SITL_commandline (or the non-ExternalAHRS
+                # section's reboot) performs anyway
 
             self.start_subtest("Testing non-ExternalAHRS backends")
             for ahrs_type in [0, 2, 3]:
@@ -17057,11 +17220,16 @@ SERIAL5_BAUD 128
             return
 
     def setGCSfailsafe(self, paramValue):
-        # Slow down the sim rate if GCS Failsafe is in use
+        # Slow down the sim rate if GCS Failsafe is in use; the test
+        # framework's GCS heartbeats are paced in wall-clock time, so
+        # while FS_GCS_ENABLE is set a Python-side stall of more than
+        # FS_GCS_TIMEOUT/speedup wall-seconds would spuriously trigger
+        # the failsafe.  With it disabled no such coupling exists, so
+        # restore the suite's full speedup.
         if paramValue == 0:
             self.set_parameters({
                 "FS_GCS_ENABLE": paramValue,
-                "SIM_SPEEDUP": 10,
+                "SIM_SPEEDUP": self.speedup,
             })
         else:
             self.set_parameters({

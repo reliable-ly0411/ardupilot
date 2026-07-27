@@ -764,7 +764,12 @@ void AC_PosControl::NE_update_controller()
     const float accel_max_mss = angle_rad_to_accel_mss(angle_max_rad);
     // Save unbounded target for use in "limited" check (not unit-consistent with z!)
     _limit_vector_ned.xy() = _accel_target_ned_mss.xy();
-    if (!limit_accel_xy(_vel_desired_ned_ms.xy(), _accel_target_ned_mss.xy(), accel_max_mss)) {
+    // Normalise desired velocity by max speed for the cross-track reference (guard zero max speed).
+    Vector2f vel_norm_ne;
+    if (is_positive(_vel_max_ne_ms)) {
+        vel_norm_ne = _vel_desired_ned_ms.xy() / _vel_max_ne_ms;
+    }
+    if (!limit_accel_xy(vel_norm_ne, _accel_target_ned_mss.xy(), accel_max_mss)) {
         // _accel_target_ned_mss was not limited so we can zero the xy limit vector
         _limit_vector_ned.xy().zero();
     }
@@ -1682,18 +1687,14 @@ float AC_PosControl::calculate_overspeed_gain()
 // Initializes tracking of NE EKF position resets.
 void AC_PosControl::NE_init_ekf_reset()
 {
-    Vector2f pos_shift;
-    _ahrs_position_NE_reset_count = _ahrs.get_position_NE_reset_count(pos_shift);
+    _ahrs_position_NE_reset_count = _ahrs.get_position_NE_reset_count();
 }
 
 // Handles NE position reset detection and response (e.g., clearing accumulated errors).
 void AC_PosControl::NE_handle_ekf_reset()
 {
-    // Check for EKF-reported NE position shift since last update
-    Vector2f pos_shift_ne_m;
-    const uint16_t reset_count = _ahrs.get_position_NE_reset_count(pos_shift_ne_m);
-    // todo: the actual difference in position and velocity estimation.
-    // This will prevent the need to pause error calculation for one cycle.
+    // Check for EKF-reported NE position reset since last update
+    const uint16_t reset_count = _ahrs.get_position_NE_reset_count();
 
     if (reset_count != _ahrs_position_NE_reset_count) {
         // This ensures controller output remains continuous after EKF realigns the origin.
@@ -1725,18 +1726,14 @@ void AC_PosControl::NE_handle_ekf_reset()
 // Initializes tracking of vertical (U) EKF resets.
 void AC_PosControl::D_init_ekf_reset()
 {
-    float alt_shift_d_m;
-    _ahrs_position_D_reset_count = _ahrs.get_position_D_reset_count(alt_shift_d_m);
+    _ahrs_position_D_reset_count = _ahrs.get_position_D_reset_count();
 }
 
 // Handles U EKF reset detection and response.
 void AC_PosControl::D_handle_ekf_reset()
 {
-    // Check for EKF-reported Down-axis shift since last update
-    float pos_shift_d_m;
-    const uint16_t reset_count = _ahrs.get_position_D_reset_count(pos_shift_d_m);
-    // todo: the actual difference in position and velocity estimation.
-    // This will prevent the need to pause error calculation for one cycle.
+    // Check for EKF-reported Down-axis reset since last update
+    const uint16_t reset_count = _ahrs.get_position_D_reset_count();
 
     if (reset_count != _ahrs_position_D_reset_count) {
         // This ensures controller output remains continuous after EKF realigns the origin.

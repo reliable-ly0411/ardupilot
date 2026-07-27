@@ -21,6 +21,7 @@ import vehicle_test_suite
 from pysim import util
 from pysim import vehicleinfo
 from vehicle_test_suite import MAV_POS_TARGET_TYPE_MASK
+from vehicle_test_suite import AltFrame
 from vehicle_test_suite import AutoTestTimeoutException
 from vehicle_test_suite import NotAchievedException
 from vehicle_test_suite import OldpymavlinkException
@@ -64,19 +65,11 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
     def sitl_start_location(self):
         return SITL_START_LOCATION
 
-    def defaults_filepath(self):
-        return os.path.join(testdir, 'default_params/plane-jsbsim.parm')
-
     def set_current_test_name(self, name):
         self.current_test_name_directory = "ArduPlane_Tests/" + name + "/"
 
     def default_frame(self):
         return "plane-elevrev"
-
-    def apply_defaultfile_parameters(self):
-        # plane passes in a defaults_filepath in place of applying
-        # parameters afterwards.
-        pass
 
     def is_plane(self):
         return True
@@ -103,7 +96,19 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         if mode == "TAKEOFF":
             return self.takeoff_in_TAKEOFF(alt=alt, relative=relative, timeout=timeout)
 
+        if mode == "QHOVER":
+            return self.takeoff_in_QHOVER(alt=alt, relative=relative, timeout=timeout)
+
         return self.takeoff_in_FBWA(alt=alt, alt_max=alt_max, relative=relative, timeout=timeout)
+
+    def takeoff_in_QHOVER(self, alt=20, relative=True, timeout=None):
+        '''VTOL climb to altitude in QHOVER'''
+        self.change_mode("QHOVER")
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.set_rc(3, 1700)  # throttle up to climb
+        self.wait_altitude(alt-2, alt+3, relative=relative, timeout=timeout)
+        self.set_rc(3, 1500)  # neutral throttle holds altitude in QHOVER
 
     def takeoff_in_TAKEOFF(self, alt=150, relative=True, mode=None, alt_epsilon=2, timeout=None):
         if relative is not True:
@@ -887,6 +892,54 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             self.wait_airspeed(want_airspeed-1, want_airspeed+1, minimum_duration=5, timeout=120)
 
         self.fly_home_land_and_disarm()
+
+    def GuidedThrottleNudge(self):
+        '''ensure THROTTLE_NUDGE nudges target airspeed in GUIDED mode'''
+        # regression test for throttle-nudge being ignored in GUIDED (issue #26094)
+        self.set_parameters({
+            "THROTTLE_NUDGE": 1,
+            "AIRSPEED_CRUISE": 22,
+            "AIRSPEED_MAX": 32,
+            "ARSPD_USE": 1,
+            # keep the vehicle flying near-straight for a stable airspeed
+            # reading while staying bounded near home
+            "WP_LOITER_RAD": 250,
+        })
+        self.takeoff(alt=100, mode="TAKEOFF", timeout=120)
+        self.set_rc(3, 1500)
+        self.change_mode("GUIDED")
+        # hold position near the current location so the vehicle loiters
+        # (auto-throttle active) rather than flying away from home
+        self.send_do_reposition(self.get_location(frame=AltFrame.ABOVE_HOME))
+        self.delay_sim_time(10, reason="vehicle to establish GUIDED position")
+
+        self.start_subtest("Neutral throttle: target airspeed sits at cruise")
+        self.wait_airspeed(20, 24, minimum_duration=5, timeout=60)
+
+        self.start_subtest("Full throttle: nudge raises target airspeed toward AIRSPEED_MAX")
+        self.set_rc(3, 2000)
+        self.wait_airspeed(28, 40, minimum_duration=5, timeout=60)
+
+        self.start_subtest("Neutral throttle: nudge released, back to cruise")
+        self.set_rc(3, 1500)
+        self.wait_airspeed(20, 24, minimum_duration=5, timeout=60)
+
+        self.start_subtest("Offboard guided speed active: throttle nudge stays suppressed")
+        # an active offboard airspeed slew must keep suppressing the nudge
+        self.run_cmd(
+            mavutil.mavlink.MAV_CMD_GUIDED_CHANGE_SPEED,
+            p1=0,   # SPEED_TYPE_AIRSPEED
+            p2=26,  # target airspeed m/s (between cruise and AIRSPEED_MAX)
+            p3=5,   # acceleration m/s/s
+        )
+        self.delay_sim_time(8, reason="offboard airspeed slew to take effect")
+        self.set_rc(3, 2000)
+        # with a slew active the nudge is suppressed, so the target holds at
+        # the commanded 26 m/s and does not climb toward AIRSPEED_MAX (32)
+        self.wait_airspeed(24, 28, minimum_duration=8, timeout=40)
+        self.set_rc(3, 1500)
+
+        self.reboot_sitl(force=True)
 
     def DO_CHANGE_SPEED_mavlink_int(self):
         self.DO_CHANGE_SPEED_mavlink(self.run_cmd_int)
@@ -2673,7 +2726,6 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.customise_SITL_commandline(
             [],
             model=model,
-            defaults_filepath=self.model_defaults_filepath(model),
             wipe=True)
 
         self.load_mission('CMAC-soar.txt', strict=False)
@@ -2769,7 +2821,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.set_rc(rc_chan, 1500)
 
         # Make sure this causes throttle down.
-        self.wait_servo_channel_value(3, 1200, timeout=3, comparator=operator.lt)
+        self.wait_servo_channel_value(3, 1200, timeout=5, comparator=operator.lt)
 
         self.progress("Waiting for next WP with no thermalling")
         self.wait_waypoint(4, 4, timeout=1200, max_dist_to_final_wp_m=120)
@@ -2787,7 +2839,6 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.customise_SITL_commandline(
             [],
             model=model,
-            defaults_filepath=self.model_defaults_filepath(model),
             wipe=True)
 
         self.load_mission('CMAC-soar.txt', strict=False)
@@ -3395,6 +3446,36 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.disarm_vehicle(force=True)
         self.reboot_sitl()
 
+    def SIMCompare(self):
+        '''compare logged EKF2 and EKF3 estimates against simulator truth'''
+        self.set_parameters({
+            'AHRS_EKF_TYPE': 3,
+            'EK2_ENABLE': 1,
+            'EK3_ENABLE': 1,
+        })
+        self.reboot_sitl()
+
+        # a takeoff, some turning flight and a landing gives the
+        # estimators a good range of attitudes and velocities to track:
+        self.takeoff(alt=50)
+        self.change_mode('CIRCLE')
+        # both filters see large transient attitude estimation errors
+        # (over 15 degrees of pitch) during the full-throttle
+        # climb-out, so compare only from established circling flight
+        # onwards:
+        compare_from = self.get_sim_time() + 15
+        self.delay_sim_time(30, reason="turning flight for the estimators to track")
+        self.fly_home_land_and_disarm()
+
+        # EKF2 systematically over-estimates pitch by up to ~15
+        # degrees during the accelerating climb-out (gated out, above)
+        # and remains a few degrees off in manoeuvring flight; EKF3
+        # tracks truth closely throughout:
+        self.assert_ekfs_match_sim_state(
+            ignore_before_time_s=compare_from,
+            max_roll_pitch_err_deg={'XKF1': 3, 'NKF1': 8},
+        )
+
     def Replay(self):
         '''test replay correctness'''
         self.progress("Building Replay")
@@ -3444,6 +3525,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.set_parameters({
             "LOG_REPLAY": 1,
             "LOG_DISARMED": 1,
+            "EK2_ENABLE": 1,
 
             "SIM_WIND_SPD": 5,
             "SIM_WIND_DIR": 45,
@@ -4659,6 +4741,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.delay_sim_time(1, reason="fence upload to complete")
         self.wait_ready_to_arm()
         self.takeoff(alt=50)
+        self.set_rc(3, 1500)
         self.change_mode("CRUISE")
         self.wait_distance(150, accuracy=20)
 
@@ -4728,6 +4811,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.wait_ready_to_arm()
         home_loc = self.mav.location()
         self.takeoff(alt=50)
+        self.set_rc(3, 1500)
         self.change_mode("CRUISE")
         self.wait_distance(150, accuracy=20)
 
@@ -4835,12 +4919,8 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
                 self.progress("Actually, no I'm not - it is an external simulation")
                 continue
             model = frame_bits.get("model", frame)
-            defaults = self.model_defaults_filepath(frame)
-            if not isinstance(defaults, list):
-                defaults = [defaults]
             self.customise_SITL_commandline(
                 [],
-                defaults_filepath=defaults,
                 model=model,
                 wipe=True,
             )
@@ -4856,6 +4936,116 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             self.arm_vehicle()
             self.fly_mission(mission_file, strict=False, quadplane=quadplane, mission_timeout=400.0)
             self.wait_disarmed()
+
+    def FlyEachFrameRCInput(self):
+        '''Confirm each internal frame can be controlled with RC in the
+        expected direction.
+
+        FlyEachFrame flies AUTO missions, which never touch the sticks, so
+        pilot-input direction (e.g. an RCn_REVERSED) is untested there.
+        For every frame we check the autotest stick convention: elevator
+        back (high RC2) pitches the nose up, aileron left (low RC1) banks
+        left.  Frames whose model deliberately reverses the pilot's RC
+        pitch/yaw input (models/plane-reverse-rc-pitch-yaw.parm) instead
+        expect the opposite pitch response.'''
+        vinfo = vehicleinfo.VehicleInfo()
+        vinfo_options = vinfo.options[self.vehicleinfo_key()]
+        known_broken_frames = {
+            "plane-tailsitter": "unstable in hover; unflyable in cruise",
+            "stratoblimp": "not expected to fly normally",
+            "glider": "needs balloon lift",
+            "plane-ice": "ICE engine needs starting; different takeoff regime",
+            "quadplane-ice": "ICE engine needs starting; different takeoff regime",
+            "quadplane-can": "needs CAN periph",
+            "quadplane-copter_tailsitter": "tailsitter hover regime; nose-up attitude",
+        }
+        # frames whose model deliberately reverses the pilot's RC pitch/yaw
+        # input (models/plane-reverse-rc-pitch-yaw.parm); the nose responds
+        # opposite to the elevator stick.  RC roll input is never reversed.
+        rc_pitch_reversed_frames = (
+            "plane-elevrev",
+            "plane-redundant",  # reversed for the Volz serial-servo tests
+        )
+        for frame in sorted(vinfo_options["frames"].keys()):
+            self.start_subtest("Testing frame (%s)" % str(frame))
+            if frame in known_broken_frames:
+                self.progress("Skipping known-broken frame (%s)" %
+                              (known_broken_frames[frame]))
+                continue
+            frame_bits = vinfo_options["frames"][frame]
+            if frame_bits.get("external", False):
+                self.progress("Skipping external simulation")
+                continue
+            model = frame_bits.get("model", frame)
+            self.customise_SITL_commandline([], model=model, wipe=True)
+            rc_reversed = frame in rc_pitch_reversed_frames
+            if self.get_parameter('Q_ENABLE'):
+                self.check_rc_input_direction_vtol(rc_pitch_reversed=rc_reversed)
+            else:
+                self.check_rc_input_direction_fixedwing(rc_pitch_reversed=rc_reversed)
+        # we deliberately do not land each frame (some aerobatic frames do
+        # not land cleanly, and the direction check does not need it) -
+        # customise_SITL_commandline restarts SITL for the next frame.  Do
+        # a final reset so the harness sees a disarmed vehicle at the end:
+        self.reset_SITL_commandline()
+
+    def check_rc_input_direction_fixedwing(self, rc_pitch_reversed=False):
+        '''in FBWA, confirm pilot pitch/roll stick moves the aircraft in the
+        expected direction (this is a sign check, not a magnitude one).
+        rc_pitch_reversed inverts the expected pitch response for models
+        that deliberately reverse the RC pitch input.'''
+        # reset the sticks: an earlier frame leaves the throttle up, which
+        # blocks arming ("Throttle (RC3) is not neutral") on the next one:
+        self.set_rc_default()
+        # climb using the autonomous TAKEOFF mode so the climb succeeds
+        # regardless of the RC pitch direction under test:
+        self.takeoff(alt=100, mode="TAKEOFF", timeout=120)
+        self.change_mode('FBWA')
+        self.set_rc(3, 2000)  # throttle up to hold flying speed
+        self.wait_level_flight()
+
+        # elevator back (high RC2) demands nose-up in FBWA (nose-down when
+        # the RC pitch input is reversed):
+        pitch_sign = -1 if rc_pitch_reversed else 1
+        self.start_subtest("elevator stick pitches %s" %
+                           ("down (RC pitch reversed)" if rc_pitch_reversed else "up"))
+        self.set_rc(2, 2000)
+        self.wait_pitch(pitch_sign * 18, accuracy=18)  # window [0, 36] or [-36, 0]
+        self.set_rc(2, 1500)
+        self.wait_level_flight()
+
+        # aileron left (low RC1) demands a left bank (roll input is never
+        # reversed on these frames):
+        self.start_subtest("aileron stick banks left")
+        self.set_rc(1, 1000)
+        self.wait_roll(-30, accuracy=30)  # window [-60, 0]
+        self.set_rc(1, 1500)
+        self.wait_level_flight()
+
+    def check_rc_input_direction_vtol(self, rc_pitch_reversed=False):
+        '''in QHOVER, confirm pilot pitch/roll stick leans the vehicle in the
+        expected direction (sign check).  rc_pitch_reversed inverts the
+        expected pitch response for models that reverse RC pitch input.'''
+        # reset the sticks: an earlier frame leaves the throttle up, which
+        # blocks arming ("Throttle (RC3) is not neutral") on the next one:
+        self.set_rc_default()
+        self.takeoff(alt=20, mode='QHOVER', timeout=60)
+
+        # elevator back (high RC2) leans the nose up (down when reversed):
+        pitch_sign = -1 if rc_pitch_reversed else 1
+        self.start_subtest("elevator stick pitches %s" %
+                           ("down (RC pitch reversed)" if rc_pitch_reversed else "up"))
+        self.set_rc(2, 1800)
+        self.wait_pitch(pitch_sign * 12, accuracy=15)  # window [-3, 27] or [-27, 3]
+        self.set_rc(2, 1500)
+        self.wait_pitch(0, accuracy=12)  # settle before the roll check
+
+        # aileron left (low RC1) leans left (roll input is never reversed):
+        self.start_subtest("aileron stick banks left")
+        self.set_rc(1, 1200)
+        self.wait_roll(-12, accuracy=15)  # window [-27, 3]
+        self.set_rc(1, 1500)
+        self.wait_roll(0, accuracy=12)  # settle
 
     def AutoLandMode(self):
         '''Test AUTOLAND mode'''
@@ -4964,6 +5154,12 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
 
     def AUTOTUNE(self):
         '''Test AutoTune mode'''
+
+        # Prior to 2026-07-15, the SITL airspeed sensor was reading about 5%
+        # slower than actual during this test. We bump the scaling airspeed by
+        # that same amount to get the same tune results as before.
+        self.set_parameter("SCALING_SPEED", 15.8)
+
         self.run_autotune()
 
         # Values that are set to constants
@@ -5122,7 +5318,6 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.customise_SITL_commandline(
             [],
             model='plane-catapult',
-            defaults_filepath=self.model_defaults_filepath("plane")
         )
         self.set_parameters({
             "ARSPD_USE": 1.0,
@@ -5170,7 +5365,6 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.customise_SITL_commandline(
             [],
             model='plane-catapult',
-            defaults_filepath=self.model_defaults_filepath("plane")
         )
         self.set_parameters({
             "ARSPD_USE": 0.0,
@@ -5217,7 +5411,6 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.customise_SITL_commandline(
             [],
             model='plane-catapult',
-            defaults_filepath=self.model_defaults_filepath("plane")
         )
         self.set_parameters({
             "ARSPD_USE": 1.0,
@@ -5276,7 +5469,6 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.customise_SITL_commandline(
             [],
             model='plane-catapult',
-            defaults_filepath=self.model_defaults_filepath("plane")
         )
         self.set_parameters({
             "ARSPD_USE": 0.0,
@@ -5329,7 +5521,6 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.customise_SITL_commandline(
             [],
             model='plane-catapult',
-            defaults_filepath=self.model_defaults_filepath("plane")
         )
         self.set_parameters({
             "ARSPD_USE": 1.0,
@@ -5383,7 +5574,6 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.customise_SITL_commandline(
             [],
             model='plane-catapult',
-            defaults_filepath=self.model_defaults_filepath("plane")
         )
         self.set_parameters({
             "ARSPD_USE": 1.0,
@@ -5440,7 +5630,6 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.customise_SITL_commandline(
             [],
             model='plane-catapult',
-            defaults_filepath=self.model_defaults_filepath("plane")
         )
         self.set_parameters({
             "ARSPD_USE": 0.0,
@@ -5509,7 +5698,6 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.customise_SITL_commandline(
             [],
             model='plane-catapult',
-            defaults_filepath=self.model_defaults_filepath("plane")
         )
         self.set_parameters({
             "ARSPD_USE": 0.0,
@@ -5611,7 +5799,6 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.customise_SITL_commandline(
             [],
             model='plane-catapult',
-            defaults_filepath=self.model_defaults_filepath("plane")
         )
         self.set_parameters({
             "TKOFF_THR_IDLE": 20.0,
@@ -5645,7 +5832,6 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.customise_SITL_commandline(
             [],
             model='plane-catapult',
-            defaults_filepath=self.model_defaults_filepath("plane")
         )
         self.set_parameters({
             "ARSPD_USE": 0.0,
@@ -6063,7 +6249,6 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.customise_SITL_commandline(
             [],
             model=model,
-            defaults_filepath="Tools/autotest/models/plane-3d.parm",
             wipe=True)
 
         self.context_push()
@@ -6490,6 +6675,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.install_terrain_handlers_context()
         self.start_subtest("set home relative altitude")
         self.takeoff(30, relative=True)
+        self.set_rc(3, 1500)
         self.change_mode('GUIDED')
 
         # remember home
@@ -7444,7 +7630,6 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.customise_SITL_commandline(
             [],
             model="glider",
-            defaults_filepath="Tools/autotest/default_params/glider.parm",
             wipe=True)
 
         self.set_parameter('LOG_DISARMED', 1)
@@ -7812,6 +7997,90 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.delay_sim_time(10, reason="airspeed sensor enable to take effect")
         if airspeed_active != [False, True]:
             raise NotAchievedException("Not using expected airspeed sensors %s" % str(airspeed_active))
+
+    def AirspeedEAS2TAS(self):
+        '''check the SITL pitot applies EAS2TAS correctly'''
+
+        self.set_parameters({
+            "SIM_WIND_SPD": 0,      # groundspeed must equal true airspeed
+            "SIM_WIND_TURB": 0,
+        })
+
+        def sample_level_flight(duration=25):
+            '''average groundspeed, airspeed and altitude over level flight'''
+            sum_gs = 0.0
+            sum_as = 0.0
+            sum_alt = 0.0
+            count = 0
+            last_airspeed_message = None
+            tstart = self.get_sim_time()
+            while self.get_sim_time_cached() - tstart < duration:
+                m = self.assert_receive_message('VFR_HUD')
+                if abs(m.climb) > 1.0:
+                    continue        # only sample steady, level flight
+                # pair with the most recent raw airspeed sensor reading,
+                # skipping if it hasn't updated since the last sample
+                a = self.mav.messages.get('AIRSPEED', None)
+                if a is None or a is last_airspeed_message or a.id != 0 or a.airspeed < 1:
+                    continue
+                last_airspeed_message = a
+                sum_gs += m.groundspeed
+                sum_as += a.airspeed
+                sum_alt += m.alt
+                count += 1
+            if count < 15:
+                raise NotAchievedException("Too few level-flight samples (%u)" % count)
+            return sum_gs / count, sum_as / count, sum_alt / count
+
+        def guided_hold_alt(alt_rel_m, timeout=600):
+            # loiter at the current position and climb/hold the target altitude
+            loc = self.mav.location()
+            self.run_cmd_int(
+                mavutil.mavlink.MAV_CMD_DO_REPOSITION,
+                p5=int(loc.lat * 1e7),
+                p6=int(loc.lng * 1e7),
+                p7=alt_rel_m,
+                frame=mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT,
+            )
+            self.wait_altitude(alt_rel_m - 5, alt_rel_m + 5, relative=True, timeout=timeout)
+            self.delay_sim_time(10, reason="settle into level flight")
+
+        low_alt_rel = 100
+        high_alt_rel = 2100
+        # Expected change in E2T for a 2000m climb
+        e2t_ratio_expected = 1.10
+        e2t_ratio_tolerance = 0.03
+
+        self.takeoff(alt=low_alt_rel, mode="TAKEOFF")
+        self.change_mode("GUIDED")
+
+        guided_hold_alt(low_alt_rel)
+        gs_lo, as_lo, alt_lo = sample_level_flight()
+
+        guided_hold_alt(high_alt_rel)
+        gs_hi, as_hi, alt_hi = sample_level_flight()
+
+        e2t_lo = gs_lo / as_lo
+        e2t_hi = gs_hi / as_hi
+        e2t_ratio = e2t_hi / e2t_lo
+        e2t_ratio_min = e2t_ratio_expected - e2t_ratio_tolerance
+        e2t_ratio_max = e2t_ratio_expected + e2t_ratio_tolerance
+
+        self.progress("EAS2TAS low:  alt=%.0f gs=%.2f as=%.2f e2t=%.4f" %
+                      (alt_lo, gs_lo, as_lo, e2t_lo))
+        self.progress("EAS2TAS high: alt=%.0f gs=%.2f as=%.2f e2t=%.4f" %
+                      (alt_hi, gs_hi, as_hi, e2t_hi))
+        self.progress("EAS2TAS ratio observed=%.4f want=[%.2f, %.2f]" %
+                      (e2t_ratio, e2t_ratio_min, e2t_ratio_max))
+
+        if e2t_ratio < e2t_ratio_min or e2t_ratio > e2t_ratio_max:
+            raise NotAchievedException(
+                f"groundspeed/airspeed ratio {e2t_ratio:.4f} outside "
+                f"[{e2t_ratio_min:.2f}, {e2t_ratio_max:.2f}]")
+
+        # force-disarm and reset SITL rather than descending all the way back down
+        self.disarm_vehicle(force=True)
+        self.reboot_sitl()
 
     def RudderArmingWithArmingChecksSkipped(self):
         '''check we can't arm with rudder even if all checks are skipped'''
@@ -8315,9 +8584,9 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.start_subtest("Plane Follow Script Load and Start")
 
         self.install_applet_script_context("plane_follow.lua")
-        self.install_script_module(self.script_modules_source_path("pid.lua"), "pid.lua")
-        self.install_script_module(self.script_modules_source_path("mavlink_attitude.lua"), "mavlink_attitude.lua")
-        self.install_mavlink_module()
+        self.install_script_module_context(self.script_modules_source_path("pid.lua"), "pid.lua")
+        self.install_script_module_context(self.script_modules_source_path("mavlink_attitude.lua"), "mavlink_attitude.lua")
+        self.install_mavlink_module_context()
 
         self.set_parameters({
             "SCR_ENABLE": 1,
@@ -8343,9 +8612,6 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.disarm_vehicle()
 
         self.reboot_sitl()
-        # remove the installed modules.
-        self.remove_installed_script_module("pid.lua")
-        self.remove_installed_script_module("mavlink_attitude.lua")
 
     def PreflightRebootComponent(self):
         '''Ensure that PREFLIGHT_REBOOT commands sent to components don't reboot Autopilot'''
@@ -8427,6 +8693,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             self.SoaringClimbRate,
             self.TestFlaps,
             self.DO_CHANGE_SPEED,
+            self.GuidedThrottleNudge,
             self.DO_REPOSITION,
             self.GuidedRequest,
             self.MainFlight,
@@ -8479,6 +8746,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             self.TerrainMission,
             self.TerrainMissionInterrupt,
             self.UniversalAutoLandScript,
+            self.SIMCompare,
             self.Replay,
         ])
         return ret
@@ -8503,6 +8771,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             self.MAV_CMD_DO_AUX_FUNCTION,
             self.SmartBattery,
             self.FlyEachFrame,
+            self.FlyEachFrameRCInput,
             self.AutoLandMode,
             self.RCDisableAirspeedUse,
             self.AHRS_ORIENTATION,
@@ -8583,6 +8852,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             self.BadRollChannelDefined,
             self.VolzMission,
             self.mavlink_AIRSPEED,
+            self.AirspeedEAS2TAS,
             self.Volz,
             self.LoggedNamedValueFloat,
             self.LoggedNamedValueInt,

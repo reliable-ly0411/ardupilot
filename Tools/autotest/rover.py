@@ -3225,7 +3225,7 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
             self.progress("ensure a mavlink1 connection can't do anything useful with new item types")
             self.set_parameter("SERIAL2_PROTOCOL", 1)
             self.reboot_sitl()
-            mav2 = mavutil.mavlink_connection("tcp:localhost:5763",
+            mav2 = mavutil.mavlink_connection("tcp:localhost:%u" % self.adjust_ardupilot_port(5763),
                                               robust_parsing=True,
                                               source_system=7,
                                               source_component=7)
@@ -3649,7 +3649,7 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
         self.drain_mav()
 
         self.start_subtest("No clear mission while it is being uploaded by a different node")
-        mav2 = mavutil.mavlink_connection("tcp:localhost:5763",
+        mav2 = mavutil.mavlink_connection("tcp:localhost:%u" % self.adjust_ardupilot_port(5763),
                                           robust_parsing=True,
                                           source_system=7,
                                           source_component=7)
@@ -3830,6 +3830,28 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
         self.stop_mavproxy(mavproxy)
 
         # MANUAL> usage: wp <changealt|clear|draw|editor|list|load|loop|move|movemulti|noflyadd|param|remove|save|savecsv|savelocal|set|sethome|show|slope|split|status|undo|update>  # noqa
+
+    def SIMCompare(self):
+        '''compare logged EKF2 and EKF3 estimates against simulator truth'''
+        self.set_parameters({
+            'AHRS_EKF_TYPE': 3,
+            'EK2_ENABLE': 1,
+            'EK3_ENABLE': 1,
+        })
+        self.reboot_sitl()
+
+        # drive a triangle to give the estimators some acceleration
+        # and yaw change to track:
+        self.change_mode('GUIDED')
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        home = self.home_position_as_location()
+        self.drive_to_location(self.offset_location_ne(home, 40, 0), timeout=60)
+        self.drive_to_location(self.offset_location_ne(home, 40, 40), timeout=60)
+        self.drive_to_location(home, timeout=60)
+        self.disarm_vehicle()
+
+        self.assert_ekfs_match_sim_state()
 
     def drive_to_location(self, loc, tolerance=1, timeout=30, target_system=1, target_component=1):
         self.assert_mode('GUIDED')
@@ -5415,11 +5437,7 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
 
     def SkidSteer(self):
         '''Check skid-steering'''
-        model = "rover-skid"
-
-        self.customise_SITL_commandline([],
-                                        model=model,
-                                        defaults_filepath=self.model_defaults_filepath(model))
+        self.customise_SITL_commandline([], model="rover-skid")
 
         self.change_mode("MANUAL")
         self.wait_ready_to_arm()
@@ -6408,7 +6426,7 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
         # execute these commands:
         self.set_parameter("MAV3_OPTIONS", 2)
         self.reboot_sitl()  # mavlink-private is reboot-required
-        mav2 = mavutil.mavlink_connection("tcp:localhost:5763",
+        mav2 = mavutil.mavlink_connection("tcp:localhost:%u" % self.adjust_ardupilot_port(5763),
                                           robust_parsing=True,
                                           source_system=7,
                                           source_component=7)
@@ -7287,12 +7305,8 @@ return update()
                 self.progress("Actually, no I'm not - it is an external simulation")
                 continue
             model = frame_bits.get("model", frame)
-            defaults = self.model_defaults_filepath(frame)
-            if not isinstance(defaults, list):
-                defaults = [defaults]
             self.customise_SITL_commandline(
                 [],
-                defaults_filepath=defaults,
                 model=model,
                 wipe=True,
             )
@@ -7446,6 +7460,7 @@ return update()
             self.DriveRTL,
             self.SmartRTL,
             self.DriveSquare,
+            self.SIMCompare,
             self.DriveMission,
             # self.DriveBrake,  # disabled due to frequent failures
             self.MAV_CMD_DO_SEND_BANNER,

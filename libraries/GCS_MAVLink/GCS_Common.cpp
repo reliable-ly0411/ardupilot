@@ -3635,7 +3635,7 @@ MAV_RESULT GCS_MAVLINK::handle_preflight_reboot(const mavlink_command_int_t &pac
 #pragma GCC diagnostic ignored "-Wstringop-overflow"
 #endif
             send_text(MAV_SEVERITY_INFO, "x: %u", (unsigned)*foo);
-#pragma GCSS diagnostic pop
+#pragma GCC diagnostic pop
 
             return MAV_RESULT_ACCEPTED;
         }
@@ -4174,20 +4174,20 @@ void GCS_MAVLINK::handle_vision_speed_estimate(const mavlink_message_t &msg)
 
 void GCS_MAVLINK::handle_command_ack(const mavlink_message_t &msg)
 {
-#if HAL_INS_ACCELCAL_ENABLED
     mavlink_command_ack_t packet;
     mavlink_msg_command_ack_decode(&msg, &packet);
 
+#if HAL_INS_ACCELCAL_ENABLED
     AP_AccelCal *accelcal = AP::ins().get_acal();
     if (accelcal != nullptr) {
         accelcal->handle_command_ack(packet, msg.sysid, msg.compid);
     }
+#endif  // HAL_INS_ACCELCAL_ENABLED
+
 #if AP_GENERATOR_LOWEHEISER_ENABLED
     // this might be an ACK from a loweheiser generator:
     handle_generator_message(msg);
-#endif
-
-#endif
+#endif  // AP_GENERATOR_LOWEHEISER_ENABLED
 }
 
 #if AP_RC_CHANNEL_ENABLED
@@ -7189,7 +7189,7 @@ void GCS_MAVLINK::get_intervals_from_filepath(const char *path, DefaultIntervals
     }
 
     char line[20];
-    while (AP::FS().fgets(line, sizeof(line)-1, f)) {
+    while (AP::FS().fgets(line, sizeof(line), f)) {
         char *saveptr = nullptr;
         const char *mavlink_id_str = strtok_r(line, " ", &saveptr);
         if (mavlink_id_str == nullptr || strlen(mavlink_id_str) == 0) {
