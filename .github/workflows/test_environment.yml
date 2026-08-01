@@ -20,6 +20,7 @@ concurrency:
 
 jobs:
   build:
+    if: github.repository == 'ArduPilot/ardupilot' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     container:
       image: ${{matrix.os}}:${{matrix.name}}
@@ -141,6 +142,7 @@ jobs:
           ./waf plane
 
   build-alpine:  # special case for alpine as it doesn't have bash by default
+    if: github.repository == 'ArduPilot/ardupilot' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     container:
       image: alpine:latest
