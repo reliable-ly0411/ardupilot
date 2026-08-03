@@ -746,7 +746,7 @@ float AP_AHRS::get_error_yaw(void) const
 float AP_AHRS::wind_alignment(const float heading_deg) const
 {
     Vector3f wind;
-    if (!wind_estimate(wind)) {
+    if (!get_wind(wind)) {
         return 0;
     }
     const float wind_heading_rad = atan2f(-wind.y, -wind.x);
@@ -758,8 +758,12 @@ float AP_AHRS::wind_alignment(const float heading_deg) const
  */
 float AP_AHRS::head_wind(void) const
 {
+    Vector3f wind;
+    // wind_alignment() has already returned zero if we have no valid
+    // estimate, so the validity of the wind vector is not checked here
+    IGNORE_RETURN(get_wind(wind));
     const float alignment = wind_alignment(get_yaw_deg());
-    return alignment * wind_estimate().xy().length();
+    return alignment * wind.xy().length();
 }
 
 /*
@@ -2016,10 +2020,7 @@ bool AP_AHRS::set_home(const Location &loc)
 
 #if AP_MISSION_ENABLED
     // Save home to mission
-    AP_Mission *mission = AP::mission();
-    if (mission != nullptr) {
-        mission->write_home_to_storage();
-    }
+    AP::mission().write_home_to_storage();
 #endif
 
     return true;
@@ -2340,7 +2341,7 @@ bool AP_AHRS::get_location(Location &loc) const
 }
 
 // return a wind estimation vector in "wind" (m/s); returns false on failure
-bool AP_AHRS::wind_estimate(Vector3f &wind) const
+bool AP_AHRS::get_wind(Vector3f &wind) const
 {
     wind = active_estimates->wind;
     return active_estimates->wind_valid;

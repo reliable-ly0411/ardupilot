@@ -2744,10 +2744,7 @@ void GCS::update_send()
         initialised_missionitemprotocol_objects = true;
         // once-only initialisation of MissionItemProtocol objects:
 #if AP_MISSION_ENABLED
-        AP_Mission *mission = AP::mission();
-        if (mission != nullptr) {
-            missionitemprotocols[MAV_MISSION_TYPE_MISSION] = NEW_NOTHROW MissionItemProtocol_Waypoints(*mission);
-        }
+        missionitemprotocols[MAV_MISSION_TYPE_MISSION] = NEW_NOTHROW MissionItemProtocol_Waypoints(AP::mission());
 #endif
 #if HAL_RALLY_ENABLED
         AP_Rally *rally = AP::rally();
@@ -3297,13 +3294,10 @@ MAV_RESULT GCS_MAVLINK::handle_command_request_message(const mavlink_command_int
 
     switch(id) {
     case MSG_AVAILABLE_MODES:
+        available_modes.requested = true;
         available_modes.should_send = true;
         available_modes.next_index = 1;
         available_modes.requested_index = (uint8_t)packet.param2;
-
-        // After the first request sequnece is streamed in the AVAILABLE_MODES_MONITOR message
-        // This allows the GCS to re-request modes if there is a change
-        set_ap_message_interval(MSG_AVAILABLE_MODES_MONITOR, 5000);
         break;
 
 #if AP_CAMERA_ENABLED
@@ -4738,13 +4732,8 @@ void GCS_MAVLINK::handle_common_mission_message(const mavlink_message_t &msg)
 
 #if AP_MAVLINK_MISSION_SET_CURRENT_ENABLED
     case MAVLINK_MSG_ID_MISSION_SET_CURRENT:    // MAV ID: 41
-    {
-        AP_Mission *_mission = AP::mission();
-        if (_mission != nullptr) {
-            handle_mission_set_current(*_mission, msg);
-        }
+        handle_mission_set_current(AP::mission(), msg);
         break;
-    }
 #endif
 
     // GCS request the full list of commands, we return just the number and leave the GCS to then request each command individually
@@ -5016,10 +5005,7 @@ MAV_RESULT GCS_MAVLINK::handle_command_run_prearm_checks(const mavlink_command_i
 // issues with MISSION_SET_CURRENT
 MAV_RESULT GCS_MAVLINK::handle_command_do_set_mission_current(const mavlink_command_int_t &packet)
 {
-    AP_Mission *mission = AP::mission();
-    if (mission == nullptr) {
-        return MAV_RESULT_UNSUPPORTED;
-    }
+    AP_Mission &mission = AP::mission();
 
     if (is_equal(packet.param1, -1.0f) || packet.param1 >= 0) {
         // these are the only values we handle - either -1 meaning do
@@ -5032,7 +5018,7 @@ MAV_RESULT GCS_MAVLINK::handle_command_do_set_mission_current(const mavlink_comm
 
     if (packet.param1 >= 0) {
         const uint32_t seq = (uint32_t)packet.param1;
-        if (seq > INT16_MAX || !mission->is_valid_index(seq)) {
+        if (seq > INT16_MAX || !mission.is_valid_index(seq)) {
             return MAV_RESULT_FAILED;
         }
     }
@@ -5044,16 +5030,16 @@ MAV_RESULT GCS_MAVLINK::handle_command_do_set_mission_current(const mavlink_comm
     const bool reset_and_restart = is_equal(packet.param2, 1.0f);
     if (reset_and_restart) {
         // reset jump counters only
-        mission->reset_jump_counters();
+        mission.reset_jump_counters();
     }
     if (packet.param1 >= 0) {
         const uint32_t seq = (uint32_t)packet.param1;
-        if (!mission->set_current_cmd(seq)) {
+        if (!mission.set_current_cmd(seq)) {
             return MAV_RESULT_FAILED;
         }
     }
     if (reset_and_restart && packet.param1 >= 0) {
-        mission->resume();
+        mission.resume();
     }
 
     // volunteer the new current waypoint for all listeners
@@ -5064,16 +5050,11 @@ MAV_RESULT GCS_MAVLINK::handle_command_do_set_mission_current(const mavlink_comm
 
 MAV_RESULT GCS_MAVLINK::handle_command_do_jump_tag(const mavlink_command_int_t &packet)
 {
-    AP_Mission *mission = AP::mission();
-    if (mission == nullptr) {
-        return MAV_RESULT_UNSUPPORTED;
-    }
-
     const uint32_t tag = (uint32_t)packet.param1;
     if (tag > UINT16_MAX) {
         return MAV_RESULT_DENIED;
     }
-    if (!mission->jump_to_tag(tag)) {
+    if (!AP::mission().jump_to_tag(tag)) {
         return MAV_RESULT_FAILED;
     }
 
@@ -5952,10 +5933,8 @@ bool GCS_MAVLINK::try_send_mission_message(const enum ap_message id)
     case MSG_CURRENT_WAYPOINT:
     {
         CHECK_PAYLOAD_SIZE(MISSION_CURRENT);
-        AP_Mission *mission = AP::mission();
-        if (mission != nullptr) {
-            send_mission_current(*mission, mission->get_current_nav_index());
-        }
+        AP_Mission &mission = AP::mission();
+        send_mission_current(mission, mission.get_current_nav_index());
         break;
     }
     case MSG_MISSION_ITEM_REACHED:
@@ -6601,10 +6580,24 @@ bool GCS_MAVLINK::send_available_mode_monitor()
 
     mavlink_msg_available_modes_monitor_send(
         chan,
-        gcs().get_available_modes_sequence()
+        available_modes.available_modes_sequence
     );
 
     return true;
+}
+
+void GCS_MAVLINK::available_modes_changed()
+{
+    // Only increment the counter if this channel is tracking modes
+    if (!available_modes.requested) {
+        return;
+    }
+
+    available_modes.available_modes_sequence += 1;
+
+    // Stream the AVAILABLE_MODES_MONITOR message
+    // This allows the GCS to re-request modes
+    set_ap_message_interval(MSG_AVAILABLE_MODES_MONITOR, 5000);
 }
 
 bool GCS_MAVLINK::try_send_message(const enum ap_message id)
@@ -7702,10 +7695,7 @@ void GCS_MAVLINK::send_high_latency2() const
 
     uint16_t current_waypoint = 0;
 #if AP_MISSION_ENABLED
-    AP_Mission *mission = AP::mission();
-    if (mission != nullptr) {
-        current_waypoint = mission->get_current_nav_index();
-    }
+    current_waypoint = AP::mission().get_current_nav_index();
 #endif
 
     uint32_t present;

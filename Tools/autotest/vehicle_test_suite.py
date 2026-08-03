@@ -990,6 +990,19 @@ class MSP_Generic(Telem):
         else:
             print("cmd=%s" % str(cmd))
 
+    def send_command(self, cmd, data=bytes()):
+        '''send an MSPv1 request frame ($M<) to the autopilot'''
+        size = len(data)
+        frame = bytearray(b'$M<')
+        frame.append(size)
+        frame.append(cmd)
+        frame.extend(data)
+        checksum = 0
+        for b in frame[3:]:  # checksum covers size, command and payload
+            checksum ^= b
+        frame.append(checksum & 0xFF)
+        self.do_write(bytes(frame))
+
     def update_read(self):
         for byte in self.do_read():
             c = chr(byte)
@@ -2179,6 +2192,9 @@ class TestSuite(abc.ABC):
         self.max_set_rc_timeout = 0
         self.last_wp_load = 0
         self.forced_post_test_sitl_reboots = 0
+        # DFReaders handed out by dfreader_for_path(); closed after each
+        # test by close_dfreaders()
+        self.dfreaders = []
         self.run_tests_called = False
         self._show_test_timings = _show_test_timings
         self.test_timings = dict()
@@ -9711,6 +9727,9 @@ Also, ignores heartbeats not from our target system'''
                 if h not in start_message_hooks:
                     self.message_hooks.remove(h)
             hooks_removed = True
+        # the test is done with any log it opened; release the
+        # filehandles rather than holding them for the life of the run:
+        self.close_dfreaders()
         self.test_timings[desc] = time.time() - start_time
         reset_needed = any(ctx.sitl_commandline_customised for ctx in self.contexts[old_contexts_length:])
 
@@ -10691,12 +10710,11 @@ Also, ignores heartbeats not from our target system'''
                 m = self.mav.recv_match(type='MAG_CAL_PROGRESS', blocking=True, timeout=5)
                 if m is None:
                     if tstop is not None:
-                        # wait 3 second to unsure that the calibration is well stopped
-                        if self.get_sim_time_cached() - tstop > 10:
-                            if reached_pct[0] > 33:
-                                raise NotAchievedException("Mag calibration didn't stop")
-                            else:
-                                break
+                        # if no more progress arrives for a few seconds after cancel,
+                        # treat the calibration as stopped regardless of the last
+                        # reported completion percentage.
+                        if self.get_sim_time_cached() - tstop > 3:
+                            break
                         else:
                             continue
                     else:
@@ -10728,7 +10746,8 @@ Also, ignores heartbeats not from our target system'''
                     if tstop is None:
                         tstop = self.get_sim_time_cached()
                 if tstop is not None:
-                    # wait 3 second to unsure that the calibration is well stopped
+                    # receiving progress for more than a few seconds after cancel
+                    # means the calibration did not stop promptly.
                     if self.get_sim_time_cached() - tstop > 3:
                         raise NotAchievedException("Mag calibration didn't stop")
             self.check_zero_mag_parameters(params)
@@ -10743,6 +10762,9 @@ Also, ignores heartbeats not from our target system'''
             tstart = self.get_sim_time()
             reached_pct = [0] * compass_tnumber
             report_get = [0] * compass_tnumber
+            # COMPASS_CAL_FIT=0.001 forces fitness > tolerance, so we expect
+            # MAG_CAL_FAILED_RESIDUALS_HIGH.
+            MAG_CAL_FAILED_RESIDUALS_HIGH = mavutil.mavlink.MAG_CAL_FAILED_RESIDUALS_HIGH
             while True:
                 if self.get_sim_time_cached() - tstart > timeout:
                     raise NotAchievedException("Cannot receive enough MAG_CAL_PROGRESS")
@@ -10750,10 +10772,10 @@ Also, ignores heartbeats not from our target system'''
                 if m.get_type() == "MAG_CAL_REPORT":
                     if report_get[m.compass_id] == 0:
                         self.progress("Report: %s" % str(m))
-                        if m.cal_status == mavutil.mavlink.MAG_CAL_FAILED:
+                        if m.cal_status == MAG_CAL_FAILED_RESIDUALS_HIGH:
                             report_get[m.compass_id] = 1
                         else:
-                            raise NotAchievedException("Mag calibration didn't failed")
+                            raise NotAchievedException("Expected MAG_CAL_FAILED_RESIDUALS_HIGH (10), got %u" % m.cal_status)
                     if all(ele >= 1 for ele in report_get):
                         self.progress("All Mag report failure")
                         break
@@ -10771,6 +10793,80 @@ Also, ignores heartbeats not from our target system'''
             self.check_zero_mag_parameters(params)
             self.check_zeros_mag_orient()
             self.set_parameter("COMPASS_CAL_FIT", old_cal_fit, add_to_context=False)
+
+            #################################################
+            if compass_tnumber > 1 and target_mask == 0:
+                self.start_subtest("Try magcal with one bad compass and ensure others continue")
+                self.progress("Compass mask is %s" % "{0:b}".format(target_mask))
+
+                old_sim_mag1_ofs_x = self.get_parameter("SIM_MAG1_OFS_X")
+                old_sim_mag1_ofs_y = self.get_parameter("SIM_MAG1_OFS_Y")
+                old_sim_mag1_ofs_z = self.get_parameter("SIM_MAG1_OFS_Z")
+
+                self.set_parameters({
+                    "SIM_MAG1_OFS_X": 2000,
+                    "SIM_MAG1_OFS_Y": 2000,
+                    "SIM_MAG1_OFS_Z": 2000,
+                }, add_to_context=False)
+
+                try:
+                    reset_pos_and_start_magcal(mavproxy, target_mask)
+                    report_status = [None] * compass_tnumber
+                    tstart = self.get_sim_time()
+                    while True:
+                        if self.get_sim_time_cached() - tstart > timeout:
+                            raise NotAchievedException("Cannot receive enough MAG_CAL_REPORT in selective-failure test")
+                        m = self.mav.recv_match(type=["MAG_CAL_PROGRESS", "MAG_CAL_REPORT"], blocking=True, timeout=1)
+                        if m is None:
+                            continue
+                        if m.get_type() != "MAG_CAL_REPORT":
+                            continue
+
+                        report_status[m.compass_id] = m.cal_status
+                        self.progress("Selective-failure report compass %u status %u" %
+                                      (m.compass_id, m.cal_status))
+                        if all(status is not None for status in report_status):
+                            break
+
+                    # SIM_MAG1_OFS_X/Y/Z=2000 exceeds COMPASS_OFFS_MAX, so one
+                    # compass is expected to report FAILED_OFFSETS. Do not
+                    # assume compass_id ordering here; some SITL setups can
+                    # differ in instance mapping.
+                    MAG_CAL_FAILED_OFFSETS = mavutil.mavlink.MAG_CAL_FAILED_OFFSETS
+                    failed_offsets_idxs = []
+                    for i, status in enumerate(report_status):
+                        if status == MAG_CAL_FAILED_OFFSETS:
+                            failed_offsets_idxs.append(i)
+
+                    if len(failed_offsets_idxs) != 1:
+                        raise NotAchievedException(
+                            "Expected exactly one compass to report MAG_CAL_FAILED_OFFSETS (8), got %u" %
+                            len(failed_offsets_idxs)
+                        )
+
+                    degraded_idx = failed_offsets_idxs[0]
+                    other_non_degraded_terminal = False
+                    for i, status in enumerate(report_status):
+                        if i == degraded_idx:
+                            continue
+                        if status is not None and status != MAG_CAL_FAILED_OFFSETS:
+                            other_non_degraded_terminal = True
+                            break
+
+                    if not other_non_degraded_terminal:
+                        raise NotAchievedException(
+                            "Expected at least one non-degraded compass terminal result"
+                        )
+
+                finally:
+                    self.set_parameters({
+                        "SIM_MAG1_OFS_X": old_sim_mag1_ofs_x,
+                        "SIM_MAG1_OFS_Y": old_sim_mag1_ofs_y,
+                        "SIM_MAG1_OFS_Z": old_sim_mag1_ofs_z,
+                    }, add_to_context=False)
+
+                self.check_zero_mag_parameters(params)
+                self.check_zeros_mag_orient()
 
             #################################################
             self.start_subtest("Try magcal and wait success")
@@ -13291,8 +13387,20 @@ switch value'''
         return latest
 
     def dfreader_for_path(self, path):
-        return DFReader.DFReader_binary(path,
-                                        zero_time_base=True)
+        '''return a DFReader for path.  The reader holds an open filehandle
+        (and an mmap) on the log until it is closed, so stash it for
+        close_dfreaders() to release at the end of the test rather than
+        leaking it for the life of the process.'''
+        ret = DFReader.DFReader_binary(path,
+                                       zero_time_base=True)
+        self.dfreaders.append(ret)
+        return ret
+
+    def close_dfreaders(self):
+        '''close all readers handed out by dfreader_for_path()'''
+        for dfreader in self.dfreaders:
+            dfreader.close()
+        self.dfreaders = []
 
     def assert_log_dsf_no_drops(self, path):
         """Assert that DSF.Dp (write-buffer drop count) is zero in the given log file"""
@@ -15376,6 +15484,168 @@ switch value'''
             if dist < 1:
                 break
 
+    def msp_connect(self, port, timeout=30):
+        '''connect an MSP client to the autopilot's (TCP server) MSP port'''
+        msp = MSP_Generic(("127.0.0.1", port))
+        tstart = self.get_sim_time()
+        while not msp.connected:
+            if self.get_sim_time_cached() - tstart > timeout:
+                raise NotAchievedException("Failed to connect to MSP port")
+            msp.connect()
+        return msp
+
+    def msp_send_until_parameters(self, msp, frames, parameters, timeout=30):
+        '''re-send the given (command, payload) MSP frames until the parameters
+        reach the wanted values; a frame sent before the link is fully up early
+        in boot can be dropped, just as a real client would resend'''
+        tstart = self.get_sim_time()
+        while True:
+            for (cmd, data) in frames:
+                msp.send_command(cmd, data)
+            try:
+                self.wait_parameter_values(parameters, timeout=3)
+                return
+            except NotAchievedException:
+                if self.get_sim_time_cached() - tstart > timeout:
+                    raise
+
+    def wait_msp_vtx_config(self, msp, want, timeout=10):
+        '''poll MSP_VTX_CONFIG until the fields in want match the FC's reply,
+        draining stale buffered frames; the reply is the config the FC hands a
+        VTX/goggle: type, band/channel one based, power index, pitmode, freq and
+        deviceIsReady (gated on the boot handshake)'''
+        MSP_VTX_CONFIG = 88
+        last = {}
+
+        def collect(cmd, data):
+            if cmd == MSP_VTX_CONFIG and len(data) >= 8:
+                (t, band, channel, power, pitmode, freq, ready) = struct.unpack("<BBBBBHB", bytes(data[:8]))
+                last['cfg'] = {
+                    "type": t, "band": band, "channel": channel, "power": power,
+                    "pitmode": pitmode, "freq": freq, "deviceIsReady": ready,
+                }
+        msp.callback = collect
+        tstart = self.get_sim_time()
+        try:
+            while True:
+                if self.get_sim_time_cached() - tstart > timeout:
+                    raise NotAchievedException("MSP_VTX_CONFIG never matched %s (last %s)" % (want, last.get('cfg')))
+                msp.send_command(MSP_VTX_CONFIG)
+                msp.update()
+                cfg = last.get('cfg')
+                if cfg is not None and all(cfg[k] == v for k, v in want.items()):
+                    return cfg
+        finally:
+            msp.callback = None
+
+    def check_msp_set_vtx_config(self, msp):
+        '''drive MSP_SET_VTX_CONFIG over the supplied client and check the
+        configured VTX band/channel/frequency/power update accordingly'''
+        MSP_SET_VTX_CONFIG = 89
+        MSP_SET_VTXTABLE_POWERLEVEL = 228
+
+        # before the air unit uploads its own config the FC advertises not-ready,
+        # which is what makes a betaflight-style VTX run its boot handshake
+        self.progress("Checking the FC reports not-ready before the handshake")
+        self.wait_msp_vtx_config(msp, {"deviceIsReady": 0})
+
+        # the leading field is overloaded: a value <= 63 encodes band/channel
+        # as band_index*8 + channel_index (both zero based internally), so
+        # 4*8 + 3 selects Raceband (band 4) channel 4 (index 3) == 5769MHz.
+        # the power index is one based, so 2 maps to the second level (100mW).
+        self.progress("Setting band/channel via the legacy encoded field")
+        self.msp_send_until_parameters(msp, [
+            (MSP_SET_VTX_CONFIG, struct.pack("<HBB", 4*8 + 3, 2, 0)),
+        ], {
+            "VTX_BAND": 4,
+            "VTX_CHANNEL": 3,
+            "VTX_FREQ": 5769,
+            "VTX_POWER": 100,
+        })
+
+        # the API 1.42 standalone band/channel fields are one based on the wire
+        # with band 0 meaning "use raw frequency"; band 3 channel 2 selects
+        # Band E (index 2) channel 2 (index 1) == 5685MHz. power index 1 == 25mW.
+        self.progress("Setting band/channel via the 1.42 standalone fields")
+        payload = struct.pack("<H", 0)          # legacy field, superseded below
+        payload += struct.pack("<BB", 1, 0)     # power index, pitmode
+        payload += struct.pack("<B", 0)         # lowPowerDisarm
+        payload += struct.pack("<H", 0)         # pitModeFreq
+        payload += struct.pack("<BBH", 3, 2, 0)  # band, channel (one based), freq
+        self.msp_send_until_parameters(msp, [(MSP_SET_VTX_CONFIG, payload)], {
+            "VTX_BAND": 2,
+            "VTX_CHANNEL": 1,
+            "VTX_FREQ": 5685,
+            "VTX_POWER": 25,
+        })
+
+        # a VTX declares its own power table (here HDZero-like 25/200/500mW) one
+        # level at a time. The power value is dBm, as betaflight power tables are
+        # (14dBm=25mW, 23dBm=200mW, 27dBm=500mW). Once learned the power index
+        # maps to those values instead of the default plan, so index 3 selects
+        # 500mW not 800mW.
+        self.progress("Learning a VTX power table then selecting from it")
+        frames = [(MSP_SET_VTXTABLE_POWERLEVEL, struct.pack("<BHB", level, dbm, 0))
+                  for level, dbm in [(1, 14), (2, 23), (3, 27)]]  # [u8 level][u16 dBm][u8 label len]
+        frames.append((MSP_SET_VTX_CONFIG, struct.pack("<HBB", 4*8 + 3, 3, 0)))
+        self.msp_send_until_parameters(msp, frames, {
+            "VTX_FREQ": 5769,
+            "VTX_POWER": 500,
+        })
+
+        # pitmode is carried as a byte alongside power in the same message and
+        # maps to the VTX pitmode option (VTX_OPTIONS bit 0)
+        self.progress("Enabling then disabling pitmode")
+        self.msp_send_until_parameters(msp, [
+            (MSP_SET_VTX_CONFIG, struct.pack("<HBB", 4*8 + 3, 3, 1)),
+        ], {"VTX_OPTIONS": 1})
+        self.msp_send_until_parameters(msp, [
+            (MSP_SET_VTX_CONFIG, struct.pack("<HBB", 4*8 + 3, 3, 0)),
+        ], {"VTX_OPTIONS": 0})
+
+        # the FC answers MSP_VTX_CONFIG with the live config and, now that the
+        # VTX has uploaded its own config, reports ready. band/channel are one
+        # based on the wire: Raceband (index 4) channel 4 (index 3) == 5769MHz,
+        # power index 3 selects the learned 500mW level.
+        self.progress("Checking the FC reports its config back over MSP_VTX_CONFIG")
+        self.wait_msp_vtx_config(msp, {
+            "type": 5, "band": 5, "channel": 4, "power": 3,
+            "pitmode": 0, "freq": 5769, "deviceIsReady": 1,
+        })
+
+    def MSPVTXConfig(self):
+        '''test changing VTX band/channel/frequency via MSP_SET_VTX_CONFIG'''
+        self.set_parameters({
+            "SERIAL5_PROTOCOL": 32,  # MSP
+            "VTX_ENABLE": 1,
+        })
+        port = self.spare_network_port()
+        self.customise_SITL_commandline([
+            "--serial5=tcp:%u" % port  # serial5 listens on localhost port
+        ])
+        self.wait_ready_to_arm()
+        msp = self.msp_connect(port)
+        self.check_msp_set_vtx_config(msp)
+        self.reboot_sitl()
+
+    def MSPDisplayPortVTXConfig(self):
+        '''test changing VTX band/channel/frequency via MSP_SET_VTX_CONFIG on
+        the MSP DisplayPort link, which is serviced by the OSD task rather than
+        the MSP thread'''
+        self.set_parameters({
+            "SERIAL5_PROTOCOL": 42,  # MSP DisplayPort
+            "OSD_TYPE": 5,           # MSP DisplayPort
+            "VTX_ENABLE": 1,
+        })
+        port = self.spare_network_port()
+        self.customise_SITL_commandline([
+            "--serial5=tcp:%u" % port  # serial5 listens on localhost port
+        ])
+        self.wait_ready_to_arm()
+        msp = self.msp_connect(port)
+        self.check_msp_set_vtx_config(msp)
+        self.reboot_sitl()
+
     def CRSF(self):
         '''Test RC CRSF'''
         self.context_push()
@@ -16326,6 +16596,16 @@ SERIAL5_BAUD 128
         # ridge (~206 m AMSL) while staying 10 m below both tests' max
         # fence altitude (225 m AMSL), so use the higher of the current
         # altitude and 215 m AMSL.
+        # north_m must be generous: on QuadPlane the reposition flies as
+        # fixed-wing GUIDED, which orbits the target at ~60-70 m
+        # (WP_LOITER_RAD plus tracking error), so arrival is accepted at
+        # 100 m -- a tighter radius is only ever satisfied transiently
+        # while joining the orbit.  The wait can therefore fire ~100 m
+        # short of the target, and the back-transition carries the
+        # aircraft tens of metres further, so the actual descent point
+        # must still be well past the cliff edge for the min-alt fence
+        # floor (~150 m AMSL in both cliff tests) to sit clearly above
+        # the terrain below.
         reposition_alt_amsl = max(current_loc.alt, 215.0)
 
         # fly to target using GUIDED mode waypoint navigation
@@ -16340,7 +16620,7 @@ SERIAL5_BAUD 128
             reposition_alt_amsl,
             frame=mavutil.mavlink.MAV_FRAME_GLOBAL,
         )
-        self.wait_location(target_loc, accuracy=50, height_accuracy=None,
+        self.wait_location(target_loc, accuracy=100, height_accuracy=None,
                            timeout=timeout)
 
         # switch back to loiter mode and descend to breach the fence floor
@@ -16520,7 +16800,7 @@ SERIAL5_BAUD 128
         self.takeoff(25, mode=self.FenceRelative_TakeoffMode())
         self.do_fence_enable()
         self.assert_mode_is(self.FenceRelative_TakeoffMode())
-        self.FenceRelative_fly_north_then_descend(150)
+        self.FenceRelative_fly_north_then_descend(300)
         self.wait_mode('RTL', timeout=120)
         expected_breach_alt = offset_home.alt + fence_alt_min
         self.assert_altitude(expected_breach_alt, accuracy=10)
@@ -16688,7 +16968,7 @@ SERIAL5_BAUD 128
         self.takeoff(20, mode=self.FenceRelative_TakeoffMode())
         self.do_fence_enable()
         self.assert_mode_is(self.FenceRelative_TakeoffMode())
-        self.FenceRelative_fly_north_then_descend(150)
+        self.FenceRelative_fly_north_then_descend(300)
         self.wait_mode('RTL', timeout=120)
         expected_breach_alt = fence_min_below_arming
         self.assert_altitude(expected_breach_alt, accuracy=10)

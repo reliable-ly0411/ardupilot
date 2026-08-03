@@ -49,7 +49,10 @@ singleton AP_AHRS method get_home Location
 singleton AP_AHRS method get_gyro Vector3f
 singleton AP_AHRS method get_accel Vector3f
 singleton AP_AHRS method get_hagl boolean float'Null
-singleton AP_AHRS method wind_estimate Vector3f
+singleton AP_AHRS method get_wind boolean Vector3f'Null
+-- compatibility binding for the removed Vector3f-returning
+-- AP_AHRS::wind_estimate() method; see lua_AP_AHRS_wind_estimate
+singleton AP_AHRS manual wind_estimate lua_AP_AHRS_wind_estimate 0 1
 singleton AP_AHRS method wind_alignment float'skip_check float'skip_check
 singleton AP_AHRS method head_wind float'skip_check
 singleton AP_AHRS method groundspeed_vector Vector2f
@@ -287,6 +290,19 @@ singleton RangeFinder method has_data_orient boolean Rotation'enum ROTATION_NONE
 singleton RangeFinder method get_pos_offset_orient Vector3f Rotation'enum ROTATION_NONE ROTATION_MAX-1
 
 singleton RangeFinder method get_backend AP_RangeFinder_Backend uint8_t'skip_check
+
+include AP_Airspeed/AP_Airspeed_config.h
+include AP_Airspeed/AP_Airspeed.h depends AP_AIRSPEED_SCRIPTING_ENABLED && APM_BUILD_TYPE(APM_BUILD_ArduPlane)
+include AP_Airspeed/AP_Airspeed_Backend.h depends AP_AIRSPEED_SCRIPTING_ENABLED && APM_BUILD_TYPE(APM_BUILD_ArduPlane)
+
+ap_object AP_Airspeed_Backend depends AP_AIRSPEED_SCRIPTING_ENABLED && APM_BUILD_TYPE(APM_BUILD_ArduPlane)
+ap_object AP_Airspeed_Backend method handle_script_differential_pressure boolean float'skip_check
+ap_object AP_Airspeed_Backend method handle_script_airspeed boolean float'skip_check
+ap_object AP_Airspeed_Backend method handle_script_temperature boolean float'skip_check
+
+singleton AP_Airspeed depends AP_AIRSPEED_SCRIPTING_ENABLED && APM_BUILD_TYPE(APM_BUILD_ArduPlane)
+singleton AP_Airspeed rename airspeed
+singleton AP_Airspeed method get_backend AP_Airspeed_Backend uint8_t'skip_check
 
 include AP_Terrain/AP_Terrain.h
 

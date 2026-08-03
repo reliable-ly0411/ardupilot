@@ -93,27 +93,20 @@ void SCurve::calculate_track(const Vector3p &origin, const Vector3p &destination
         arc.center_ne = Vector2f();
         seg_length = seg_delta.length();
     } else {
+        // arc segment. The outer condition guarantees chord_length > 0 and
+        // |sin(arc_ang_rad/2)| >= sin(0.5 deg), so both divisions below are safe and
+        // arc.radius_ne is always positive (>= chord_length/2).
         is_arc_segment = true;
         arc.angle_rad = arc_ang_rad;
         arc.radius_ne = fabsf(chord_length / (2.0f * fabsf(sinf(arc.angle_rad * 0.5f))));
         const float center_offset = safe_sqrt(sq(arc.radius_ne) - sq(chord_length * 0.5f)); // perpendicular offset from chord to circle center
-        const float turn_dir = is_negative(arc.angle_rad) ? -1.0f : 1.0f; // -1 for CCW, 1 for CW 
+        const float turn_dir = is_negative(arc.angle_rad) ? -1.0f : 1.0f; // -1 for CCW, 1 for CW
         const float center_side = (is_positive(wrap_PI(fabsf(arc.angle_rad)))) ? 1.0f : -1.0f; // 1 for |angle| < PI, -1 for |angle| > PI
-        if (!is_zero(arc.radius_ne) && !is_zero(chord_length)) {
-            arc.center_ne = chord * 0.5f + Vector2f(-chord.y, chord.x) * (center_side * turn_dir * center_offset / chord_length);
-            arc.length_ne = arc.radius_ne * fabsf(arc.angle_rad);
-            seg_length = safe_sqrt(sq(seg_delta.z) + sq(arc.length_ne));
-            accel_c = is_positive(accel_c) ? accel_c : accel_xy;
-            speed_xy = MIN(speed_xy, safe_sqrt(accel_c * arc.radius_ne));
-        } else {
-            // straight segment
-            is_arc_segment = false;
-            arc.angle_rad = 0.0f;
-            arc.length_ne = chord_length;
-            arc.radius_ne = 0.0f;
-            arc.center_ne = Vector2f();
-            seg_length = seg_delta.length();
-        }
+        arc.center_ne = chord * 0.5f + Vector2f(-chord.y, chord.x) * (center_side * turn_dir * center_offset / chord_length);
+        arc.length_ne = arc.radius_ne * fabsf(arc.angle_rad);
+        seg_length = safe_sqrt(sq(seg_delta.z) + sq(arc.length_ne));
+        accel_c = is_positive(accel_c) ? accel_c : accel_xy;
+        speed_xy = MIN(speed_xy, safe_sqrt(accel_c * arc.radius_ne));
     }
     if (is_zero(seg_length)) {
         seg_delta.zero();
@@ -124,10 +117,14 @@ void SCurve::calculate_track(const Vector3p &origin, const Vector3p &destination
     snap_max = snap_maximum;
     jerk_max = jerk_maximum;
 
-    // update speed and acceleration limits along path
-    set_kinematic_limits(origin, destination,
-                         speed_xy, speed_up, speed_down,
-                         accel_xy, accel_z);
+    // Set speed and acceleration limits from the path that is actually flown: the
+    // horizontal extent is the arc length (equal to the chord for a straight
+    // segment) and the vertical extent is seg_delta.z. Using the straight-line
+    // chord here would understate a climbing arc's horizontal travel and needlessly
+    // throttle it against the vertical speed limit.
+    vel_max = kinematic_limit(arc.length_ne, seg_delta.z, speed_xy, speed_up, speed_down);
+    accel_max = kinematic_limit(arc.length_ne, seg_delta.z, accel_xy, accel_z, accel_z);
+    accel_z_max = accel_z;
 
     // avoid divide-by zeros. Path will be left as a zero length path
     if (!is_positive(snap_max) || !is_positive(jerk_max) || !is_positive(accel_max) || !is_positive(vel_max)) {
@@ -586,18 +583,19 @@ void SCurve::project_scurve_onto_track(float scurve_A1, float scurve_V1, float s
         Vector3f delta_pos(arc.center_ne + center_to_pos_ne, scurve_P1 * dz_ds);
         pos += delta_pos.topostype();
 
-        // direction unit (tangent + vertical slope)
+        // direction unit
         Vector2f arc_tangent_ne = Vector2f(-center_to_pos_ne.y, center_to_pos_ne.x) * turn_dir;
         arc_tangent_ne /= arc.radius_ne;
-        Vector3f path_unit(arc_tangent_ne.x, arc_tangent_ne.y, dz_ds);
+        const float horiz_ds = arc.length_ne / seg_length;
+        Vector3f path_unit(arc_tangent_ne.x * horiz_ds, arc_tangent_ne.y * horiz_ds, dz_ds);
         path_unit.normalize();
 
         // velocity & tangential accel
         vel += path_unit * scurve_V1;
         accel += path_unit * scurve_A1;
 
-        // centripetal accel
-        accel.xy() -= center_to_pos_ne * sq(scurve_V1 / arc.radius_ne);
+        // centripetal accel uses the horizontal speed component (scurve_V1 * horiz_ds)
+        accel.xy() -= center_to_pos_ne * sq(scurve_V1 * horiz_ds / arc.radius_ne);
 
         return;
     }
@@ -1096,22 +1094,6 @@ void SCurve::add_segment(uint8_t &index, float end_time, SegmentType seg_type, f
     segment[index].end_vel = end_vel;
     segment[index].end_pos = end_pos;
     index++;
-}
-
-// set speed and acceleration limits for the path
-// origin and destination are offsets from EKF origin
-// speed and acceleration parameters are given in horizontal, up and down.
-void SCurve::set_kinematic_limits(const Vector3p &origin, const Vector3p &destination,
-                                  float speed_xy, float speed_up, float speed_down,
-                                  float accel_xy, float accel_z)
-{
-    Vector3f direction = (destination - origin).tofloat();
-    const float track_speed_max = kinematic_limit(direction, speed_xy, speed_up, speed_down);
-    const float track_accel_max = kinematic_limit(direction, accel_xy, accel_z, accel_z);
-
-    vel_max = track_speed_max;
-    accel_max = track_accel_max;
-    accel_z_max = accel_z;
 }
 
 // return true if the curve is valid.  Used to identify and protect against code errors
