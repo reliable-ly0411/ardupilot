@@ -42,6 +42,18 @@ VEHICLE_MAP = {
 class BuildScriptBase(ABC):
     """Base class for build scripts with common utilities for running programs"""
 
+    # filled in on first use of the bootloader_blacklist property:
+    _bootloader_blacklist = None
+
+    @property
+    def bootloader_blacklist(self):
+        '''set of board names for which we do not build bootloaders.  Worked
+        out on first use rather than up-front, as it parses hwdefs and
+        most runs never build a bootloader'''
+        if self._bootloader_blacklist is None:
+            self._bootloader_blacklist = self.make_bootloader_blacklist()
+        return self._bootloader_blacklist
+
     def __init__(self, progress_file=None):
         self.tmpdir = None  # Can be set by subclasses that need it
         self.progress_file = progress_file
@@ -95,8 +107,12 @@ class BuildScriptBase(ABC):
     def make_bootloader_blacklist(self):
         '''return set of board names for which we do not build bootloaders;
         requires self.boards_by_name to have been populated'''
-        # some boards we don't have a -bl.dat for, so skip them.
-        # TODO: find a way to get this information from board_list:
+        # boards which have no bootloader of their own.  This list is
+        # deliberately explicit: a board with no hwdef-bl.dat which is
+        # not named here is a mistake, and must fail the bootloader
+        # build rather than be silently skipped.  Boards which take
+        # another board's bootloader say so in their hwdef, and are
+        # picked up from that below.
         ret = set([
             'CubeOrange-SimOnHardWare',
             'CubeOrangePlus-SimOnHardWare',
@@ -116,37 +132,20 @@ class BuildScriptBase(ABC):
             'Pixhawk1-1M-bdshot',
             'Pixhawk1-bdshot',
             'RADIX2HD',
-            'canzero',
-            't3-gem-o1',
-            'CUAV-Pixhack-v3',  # uses USE_BOOTLOADER_FROM_BOARD
             'kha_eth',  # no hwdef-bl.dat
-            'TBS-L431-Airspeed',  # uses USE_BOOTLOADER_FROM_BOARD
-            'TBS-L431-BattMon',  # uses USE_BOOTLOADER_FROM_BOARD
-            'TBS-L431-CurrMon',  # uses USE_BOOTLOADER_FROM_BOARD
-            'TBS-L431-PWM',  # uses USE_BOOTLOADER_FROM_BOARD
-            'ARKV6X-bdshot',  # uses USE_BOOTLOADER_FROM_BOARD
-
-            'MatekL431-ADSB',  # uses USE_BOOTLOADER_FROM_BOARD
-            'MatekL431-Airspeed',  # uses USE_BOOTLOADER_FROM_BOARD
-            'MatekL431-APDTelem',  # uses USE_BOOTLOADER_FROM_BOARD
-            'MatekL431-AUAV',  # uses USE_BOOTLOADER_FROM_BOARD
-            'MatekL431-BatteryTag',  # uses USE_BOOTLOADER_FROM_BOARD
-            'MatekL431-BattMon',  # uses USE_BOOTLOADER_FROM_BOARD
-            'MatekL431-bdshot',  # uses USE_BOOTLOADER_FROM_BOARD
-            'MatekL431-DShot',  # uses USE_BOOTLOADER_FROM_BOARD
-            'MatekL431-EFI',  # uses USE_BOOTLOADER_FROM_BOARD
-            'MatekL431-GPS',  # uses USE_BOOTLOADER_FROM_BOARD
-            'MatekL431-HWTelem',  # uses USE_BOOTLOADER_FROM_BOARD
-            'MatekL431-MagHiRes',  # uses USE_BOOTLOADER_FROM_BOARD
-            'MatekL431-Periph',  # uses USE_BOOTLOADER_FROM_BOARD
-            'MatekL431-Proximity',  # uses USE_BOOTLOADER_FROM_BOARD
-            'MatekL431-Rangefinder',  # uses USE_BOOTLOADER_FROM_BOARD
-            'MatekL431-RC',  # uses USE_BOOTLOADER_FROM_BOARD
-            'MatekL431-Serial',  # uses USE_BOOTLOADER_FROM_BOARD
         ])
 
         for board in self.boards_by_name.values():
-            if board.hal in ["Linux", "ESP32", "SITL"]:
+            if board.hal in ["Linux", "ESP32", "SITL", "QURT"]:
+                # only ChibiOS boards have bootloaders
+                ret.add(board.name)
+                continue
+            if board.name in ret:
+                continue
+            # a board which takes another board's bootloader does not
+            # build one of its own:
+            if board.get_hwdef().get_config(
+                    'USE_BOOTLOADER_FROM_BOARD', default=None, required=False) is not None:
                 ret.add(board.name)
 
         return ret
