@@ -1527,6 +1527,31 @@ class AutoTestQuadPlane(vehicle_test_suite.TestSuite):
             raise NotAchievedException("Should pass 90m before passing waypoint 5")
         self.wait_disarmed(timeout=300)
 
+    def WPSpdChange(self):
+        '''verify Q_WP_SPD takes effect on AUTO entry without reboot'''
+        # enable VTOL-only AUTO so Q_WP_SPD controls cruise speed
+        self.set_parameter('Q_ENABLE', 2)
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_VTOL_TAKEOFF, 0, 0, 30),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 700, 0, 40),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, -700, 0, 40),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 700, 0, 40),
+        ])
+
+        # set Q_WP_SPD above default (5) without rebooting after the change
+        self.set_parameter('Q_WP_SPD', 12.0)
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.change_mode('AUTO')
+
+        # wait for VTOL takeoff to complete, then check cruise speed
+        self.wait_altitude(35, 45, relative=True, timeout=60)
+        self.wait_groundspeed(8, 16, timeout=60)
+
+        # switch to QRTL so the plane ends up where it started
+        self.change_mode('QRTL')
+        self.wait_disarmed(timeout=120)
+
     def Mission(self):
         '''fly the OBC 2016 mission in Dalby'''
         self.load_mission("Dalby-OBC2016.txt")
@@ -3393,6 +3418,62 @@ class AutoTestQuadPlane(vehicle_test_suite.TestSuite):
         })
         self.do_RTL()
 
+    def TECSThrSpikeOnModeChange(self):
+        ''' Regression test for issue #33871. '''
+
+        # The bug only affects vectored tiltrotors.
+        self.customise_SITL_commandline(
+            [],
+            model="quadplane-tilthvec",
+            wipe=True,
+        )
+
+        # Turn off throttle slew limit
+        self.set_parameter("THR_SLEWRATE", 0)
+
+        # Take off and transition to fixed-wing flight.
+        self.takeoff(25, mode='QHOVER', timeout=120)
+        self.context_collect('STATUSTEXT')
+        self.change_mode('FBWA')
+        self.set_rc(3, 2000)
+        self.wait_statustext('Transition FW done', timeout=60)
+
+        # Add hook to check throttle level
+        class DetectThrottleSpike(vehicle_test_suite.TestSuite.MessageHook):
+            '''Checks for spikes in throttle output'''
+            def __init__(self, suite):
+                super(DetectThrottleSpike, self).__init__(suite)
+                self.num_samples = 0
+
+            def hook_removed(self):
+                if self.num_samples == 0:
+                    raise NotAchievedException("Did not get SERVO_OUTPUT_RAW")
+
+            def process(self, mav, m):
+                if m.get_type() != 'SERVO_OUTPUT_RAW':
+                    return
+
+                self.num_samples += 1
+                if m.servo3_raw > 1750:
+                    raise NotAchievedException("Throttle spike (%u)" % (m.servo3_raw))
+
+        self.set_message_rate_hz('SERVO_OUTPUT_RAW', 200)
+
+        # Install a hook to check for throttle spike
+        self.context_push()
+        self.install_message_hook_context(DetectThrottleSpike(self))
+
+        # Fly in CRUISE so TECS runs and _throttle_dem converges toward 80%
+        # (TRIM_THROTTLE feed-forward keeps _throttle_dem well above 40%).
+        self.set_rc(3, 1000)
+        self.delay_sim_time(1, reason="Allow vehicle to stabilize at low throttle")
+        self.change_mode('CRUISE')
+
+        self.delay_sim_time(5, reason="Check throttle output")
+        self.context_pop()
+
+        self.do_RTL()
+
     def tests(self):
         '''return list of all tests'''
 
@@ -3477,5 +3558,7 @@ class AutoTestQuadPlane(vehicle_test_suite.TestSuite):
             self.FenceRelativeToTerrainMinAlt,
             self.PlaneWindFailsafe,
             self.HighServoFunctionDefault,
+            self.WPSpdChange,
+            self.TECSThrSpikeOnModeChange,
         ])
         return ret
