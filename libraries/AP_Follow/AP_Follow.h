@@ -77,7 +77,9 @@ public:
     // Target Estimation and Tracking Methods
     //==========================================================================
 
-    // Returns true if following is enabled and a recent target location update has been received.
+    // Returns true if a usable estimate of the configured target is available.  Every accessor
+    // below is gated on this, but a true return does not guarantee they will succeed, so callers
+    // must still check what each accessor returns.
     bool have_target() const;
 
     // Projects the target’s position, velocity, and heading forward using the latest updates, smoothing with input shaping if necessary 
@@ -169,6 +171,9 @@ private:
     // returns true if we should extract information from msg
     bool should_handle_message(const mavlink_message_t &msg) const;
 
+    // Returns true if the target data we hold is fresh and was supplied by the configured system.
+    bool have_target_data() const;
+
     // Checks whether the current estimate should be reset based on position and velocity errors.
     bool estimate_error_too_large() const;
     
@@ -236,7 +241,7 @@ private:
     Vector3f    _ofs_estimate_vel_ned_ms;       // Estimated velocity with offsets applied (NED frame)
     Vector3f    _ofs_estimate_accel_ned_mss;    // Estimated acceleration with offsets applied (NED frame)
 
-    int16_t     _sysid_used;                    // Currently active sysid used for updates
+    int16_t     _sysid_of_data;                    // sysid that supplied the target data we currently hold
     float       _dist_to_target_m;              // Horizontal distance to target, for reporting (meters)
     float       _bearing_to_target_deg;         // Bearing to target from vehicle (degrees, 0 = North)
     bool        _offsets_were_zero;             // True if initial offset was zero before being initialized

@@ -94,6 +94,16 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
     def sitl_start_location(self):
         return SITL_START_LOCATION
 
+    def max_distance_from_startup_location_at_end_of_test(self):
+        # Copter's tests start from the point the simulation puts the
+        # vehicle, so each of them has to leave it there.  Two metres
+        # sits in the gap the measurements show: a copter which takes
+        # off and lands comes back to within about 1.3m of where it
+        # started - Landing measured 1.24m and 1.10m on consecutive
+        # runs - while the tests which genuinely fly away and stay away
+        # start at 2.38m and run to 400m.
+        return 2
+
     def mavproxy_options(self):
         ret = super(AutoTestCopter, self).mavproxy_options()
         if self.frame != 'heli':
@@ -680,6 +690,9 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.wait_waypoint(0, num_wp-1, timeout=500)
         self.progress("test: MISSION COMPLETE: passed!")
         self.land_and_disarm()
+
+        # we are not at the home location - reboot so the next test starts there
+        self.reboot_sitl()
 
     def WPArcs(self):
         '''Test WP Arc functionality'''
@@ -1668,6 +1681,9 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.set_parameter('FS_OPTIONS', 0)
         self.progress("All GCS failsafe tests complete")
 
+        # we are not at the home location - reboot so the next test starts there
+        self.reboot_sitl()
+
     def TerrainFailsafe(self):
         '''test that auto mode triggers terrain failsafe if waypoint alt frame is terrain and terrain database is disabled'''
         # allow arming and takeoff in Auto mode
@@ -1852,6 +1868,9 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.wait_landed_and_disarmed()
         self.set_parameter('SIM_BATT_VOLTAGE', 12.5)
         self.clear_battery_failsafe()
+
+        # we are not at the home location - reboot so the next test starts there
+        self.reboot_sitl()
 
     def BatteryFailsafeCriticalLanding(self):
         '''Battery failsafe critical landing not interrupted by RC failure'''
@@ -3628,6 +3647,36 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
     def CompassMot(self):
         '''test code that adjust mag field for motor interference'''
+        # simulate real motor interference for the calibration to
+        # learn: SIM_MAG_MOT is applied as mGauss per amp of battery
+        # current.  Without it the calibration fits noise and whatever
+        # attitude changes the (unanchored, throttled-up) vehicle's
+        # excursions produce - the historical strictly-positive
+        # compensation check passed or failed by accident.  Negative
+        # interference so the learned compensation is positive:
+        self.set_parameters({
+            "SIM_MAG_MOT_X": -10,
+            "SIM_MAG_MOT_Y": -10,
+            "SIM_MAG_MOT_Z": -10,
+            "SIM_CLAMP_CH": 11,
+        })
+        # the calibration below makes the *firmware* write its results,
+        # so the suite has no record of them and they would survive into
+        # every test which follows in this session.  Register them for
+        # restoration on context_pop():
+        self.context_preserve_parameters([
+            "COMPASS_MOTCT",
+            "COMPASS_MOT_X", "COMPASS_MOT_Y", "COMPASS_MOT_Z",
+            "COMPASS_MOT2_X", "COMPASS_MOT2_Y", "COMPASS_MOT2_Z",
+            "COMPASS_MOT3_X", "COMPASS_MOT3_Y", "COMPASS_MOT3_Z",
+        ])
+
+        # hold the vehicle in the simulated clamp so the calibration
+        # is bench-static, as compassmot is in the real world - at
+        # full throttle an unclamped SITL vehicle takes off and
+        # crashes mid-calibration:
+        self.run_cmd(mavutil.mavlink.MAV_CMD_DO_SET_SERVO, p1=11, p2=2000)
+        self.wait_statustext("SITL: Clamp: grabbed vehicle")
         self.run_cmd(
             mavutil.mavlink.MAV_CMD_PREFLIGHT_CALIBRATION,
             0,  # p1
@@ -3677,10 +3726,16 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         m = self.wait_message_field_values("COMPASSMOT_STATUS", {
             "throttle": 0,
         }, verbose=True)
+        # the calibration should recover the injected interference:
+        # compensation is the negation of SIM_MAG_MOT (measured
+        # recovery error ~0.001%; tolerance is generous)
         for axis in "X", "Y", "Z":
             fieldname = "Compensation" + axis
-            if getattr(m, fieldname) <= 0:
-                raise NotAchievedException("Expected non-zero %s" % fieldname)
+            value = getattr(m, fieldname)
+            if abs(value - 10.0) > 0.5:
+                raise NotAchievedException(
+                    "%s %f does not match injected interference (want 10.0)" %
+                    (fieldname, value))
 
         # it's kind of crap - but any command-ack will stop the
         # calibration
@@ -4334,6 +4389,11 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.set_rc(2, 1500)
 
         self.do_RTL()
+
+        # we have played with SIM_BARO_DRIFT and that causes the
+        # estimators to build up state that takes time to decay - so
+        # just reboot.
+        self.reboot_sitl()
 
     def OpticalFlowCalibration(self):
         '''test optical flow calibration'''
@@ -6445,15 +6505,8 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                 self.set_analog_rangefinder_parameters()
                 self.set_parameter("SIM_SONAR_SCALE", 12)
 
-                start = self.mav.location()
-                target = start
-                (target.lat, target.lng) = mavextra.gps_offset(start.lat, start.lng, 4, -4)
-                self.progress("Setting target to %f %f" % (target.lat, target.lng))
-
                 self.set_parameters({
                     "SIM_PLD_ENABLE": 1,
-                    "SIM_PLD_LAT": target.lat,
-                    "SIM_PLD_LON": target.lng,
                     "SIM_PLD_HEIGHT": 0,
                     "SIM_PLD_ALT_LMT": 15,
                     "SIM_PLD_DIST_LMT": 10,
@@ -6462,6 +6515,21 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                 self.reboot_sitl()
 
                 self.progress("Waiting for location")
+                self.wait_ready_to_arm()
+
+                # place the target relative to the vehicle's post-reboot
+                # position - which is the spawn position.  Sampling the
+                # position before the reboot places the target wherever
+                # the previous test happened to leave the vehicle:
+                start = self.mav.location()
+                target = start
+                (target.lat, target.lng) = mavextra.gps_offset(start.lat, start.lng, 4, -4)
+                self.progress("Setting target to %f %f" % (target.lat, target.lng))
+                self.set_parameters({
+                    "SIM_PLD_LAT": target.lat,
+                    "SIM_PLD_LON": target.lng,
+                })
+
                 self.zero_throttle()
                 self.takeoff(10, 1800, mode="LOITER")
                 self.change_mode("LAND")
@@ -7387,6 +7455,9 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
     def WPYawBehaviour1RTL(self):
         '''ensure behaviour 1 (face home) works in RTL'''
         self.start_subtest("moving off in guided mode and checking return yaw")
+        # the vehicle's heading is whatever the previous test left it
+        # at - reboot to get the known spawn heading
+        self.reboot_sitl()
         self.change_mode('GUIDED')
         self.wait_ready_to_arm()
         self.wait_heading(272, timeout=1)  # verify initial heading"
@@ -9038,6 +9109,28 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         esc_hz = rpm_total / (rpm_count * 60)
         return esc_hz
 
+    def assert_notch_filter_count(self, expected, instance=0):
+        '''check the number of notch filters allocated for a harmonic notch
+        instance, as logged in the NF field of FCN.  Note that FCN is only
+        logged when the notch has more than one frequency source, so
+        notch-per-motor must be enabled'''
+        mlog = self.dfreader_for_current_onboard_log()
+        count = None
+        while True:
+            m = mlog.recv_match(type="FCN")
+            if m is None:
+                break
+            if m.I != instance:
+                continue
+            count = m.NF
+        if count is None:
+            raise NotAchievedException("Did not find a FCN message for notch %u" % instance)
+        if count != expected:
+            raise NotAchievedException(
+                "Expected %u notch filters for notch %u, got %u" %
+                (expected, instance, count))
+        self.progress("Notch %u has %u filters" % (instance, count))
+
     def DynamicNotches(self):
         """Use dynamic harmonic notch to control motor noise."""
         self.progress("Flying with dynamic notches")
@@ -9074,12 +9167,23 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         freq, hover_throttle, peakdb1 = \
             self.hover_and_check_matched_frequency_with_fft(-10, 20, 350, reverse=True)
 
+        # a peak check alone cannot tell a quintuple notch from a triple one, so
+        # notch-per-motor is enabled for the composite notch runs below.  That
+        # makes the number of allocated filters visible in the NF field of FCN,
+        # which is only logged for a multi-source notch.  Note this also moves
+        # throttle tracking onto per-motor thrust, so the runs below fly a notch
+        # per motor rather than a single throttle-derived notch.
+        motors = 4      # the default frame is a quad
+        harmonics = 2   # INS_HNTCH_HMNCS is 5, the first and third harmonic
+
         # now add double dynamic notches and check that the peak is squashed
-        self.set_parameter("INS_HNTCH_OPTS", 1)
+        self.set_parameter("INS_HNTCH_OPTS", 3)  # double-notch, notch-per-motor
         self.reboot_sitl()
 
         freq, hover_throttle, peakdb2 = \
             self.hover_and_check_matched_frequency_with_fft(-15, 20, 350, reverse=True)
+
+        self.assert_notch_filter_count(motors * harmonics * 2)
 
         # double-notch should do better, but check for within 5%
         if peakdb2 * 1.05 > peakdb1:
@@ -9088,11 +9192,13 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                 (peakdb2, peakdb1))
 
         # now add triple dynamic notches and check that the peak is squashed
-        self.set_parameter("INS_HNTCH_OPTS", 16)
+        self.set_parameter("INS_HNTCH_OPTS", 18)  # triple-notch, notch-per-motor
         self.reboot_sitl()
 
         freq, hover_throttle, peakdb2 = \
             self.hover_and_check_matched_frequency_with_fft(-15, 20, 350, reverse=True)
+
+        self.assert_notch_filter_count(motors * harmonics * 3)
 
         # triple-notch should do better, but check for within 5%
         if peakdb2 * 1.05 > peakdb1:
@@ -9101,13 +9207,15 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                 (peakdb2, peakdb1))
 
         # now add quintuple dynamic notches and check that the peak is squashed
-        self.set_parameter("INS_HNTCH_OPTS", 64)
+        self.set_parameter("INS_HNTCH_OPTS", 66)  # quintuple-notch, notch-per-motor
         self.reboot_sitl()
 
         freq, hover_throttle, peakdb2 = \
             self.hover_and_check_matched_frequency_with_fft(-15, 20, 350, reverse=True)
 
-        # triple-notch should do better, but check for within 5%
+        self.assert_notch_filter_count(motors * harmonics * 5)
+
+        # quintuple-notch should do better, but check for within 5%
         if peakdb2 * 1.05 > peakdb1:
             raise NotAchievedException(
                 "Quintuple-notch peak was higher than single-notch peak %fdB > %fdB" %
@@ -9723,8 +9831,21 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         # when we pop the context
         self.set_parameter("FFT_ENABLE", 0)
 
+    # every parameter the harmonic notch has
+    # (libraries/Filter/HarmonicNotchFilter.cpp), which is what the FFT
+    # notch tune writes and saves for itself
+    harmonic_notch_params = [
+        "INS_HNTCH_%s" % suffix
+        for suffix in ("ENABLE", "FREQ", "BW", "ATT", "HMNCS", "REF",
+                       "MODE", "OPTS", "FM_RAT")
+    ]
+
     def GyroFFTAverage(self):
         """Use dynamic harmonic notch to control motor noise setup via FFT averaging."""
+        # the point of this test is that the vehicle works the notch out
+        # and saves it, which the suite has no record of and so cannot
+        # revert; register the values now so that it can
+        self.context_preserve_parameters(self.harmonic_notch_params)
         # basic gyro sample rate test
         self.progress("Flying with gyro FFT harmonic - Gyro sample rate")
         # Step 1
@@ -10000,10 +10121,15 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         })
         self.reboot_sitl()
 
+        # the FFT reports its finding during the hover below - before
+        # this wait begins - so collect from here rather than only
+        # seeing what arrives once we start looking
+        self.context_collect('STATUSTEXT')
+
         # do test flight:
         self.takeoff(10, mode="ALT_HOLD")
         tstart, tend, hover_throttle = self.hover_for_interval(10)
-        self.wait_statustext("Noise ", timeout=20)
+        self.wait_statustext("Noise ", timeout=20, check_context=True)
         self.set_parameter("SIM_GYR1_RND", 0) # stop noise so that we can get home
         self.do_RTL()
 
@@ -10139,6 +10265,9 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                 (max_post_arming_home_offset_delta_mm, delta_between_original_home_alt_offset_and_new_home_alt_offset_mm))
 
         self.wait_disarmed()
+
+        # we are not at the home location - reboot so the next test starts there
+        self.reboot_sitl()
 
     def PrecisionLoiterCompanion(self):
         """Use Companion PrecLand backend precision messages to loiter."""
@@ -10395,6 +10524,10 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
     def check_avoidance_corners(self):
         self.takeoff(10, mode="LOITER")
         here = self.mav.location()
+        # the vehicle starts a test at home but with whatever heading
+        # the previous test left it; face west like the other corner
+        # legs explicitly face their travel direction:
+        self.reach_heading_manual(270)
         self.set_rc(2, 1400)
         west_loc = mavutil.location(-35.363007,
                                     149.164911,
@@ -12361,6 +12494,73 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             if len(wanted_distances.keys()) == 0:
                 break
 
+    def MAVLinkRangeFinderIDs(self):
+        '''test multiple MAVLink rangefinders selected by DISTANCE_SENSOR id'''
+        self.context_push()
+        try:
+            self.set_parameters({
+                "SERIAL5_PROTOCOL": 1,
+                "RNGFND1_TYPE": 10,
+                "RNGFND1_ADDR": 1,
+                "RNGFND2_TYPE": 10,
+                "RNGFND2_ADDR": 2,
+            })
+            self.reboot_sitl()
+
+            # we are interacting with the autopilot, reduce chance of
+            # hitting timeouts on supplied data:
+            self.context_set_speedup(1)
+            self.context_set_message_rate_hz("DISTANCE_SENSOR", 10)
+
+            self.context_collect("DISTANCE_SENSOR")
+            input_distances = {
+                1: 20,
+                2: 30,
+            }
+            for _ in range(10):
+                for input_id, distance_cm in input_distances.items():
+                    self.mav.mav.distance_sensor_send(
+                        0,  # time_boot_ms
+                        10, # min_distance
+                        50, # max_distance
+                        distance_cm, # current_distance
+                        mavutil.mavlink.MAV_DISTANCE_SENSOR_LASER, # type
+                        input_id, # id
+                        mavutil.mavlink.MAV_SENSOR_ROTATION_PITCH_270, # orientation
+                        255 # covariance
+                    )
+                self.delay_sim_time(0.1, reason="collect rangefinder output")
+
+            messages = self.context_collection("DISTANCE_SENSOR")
+            self.context_stop_collecting("DISTANCE_SENSOR")
+            if not messages:
+                raise NotAchievedException("Did not receive DISTANCE_SENSOR output")
+
+            output_distances = {
+                0: input_distances[1],
+                1: input_distances[2],
+            }
+            seen_ids = set()
+            for message in messages:
+                if message.id not in output_distances:
+                    raise NotAchievedException(
+                        "Unexpected MAVLink rangefinder backend id %u" % message.id)
+                distance_cm = output_distances[message.id]
+                if abs(message.current_distance - distance_cm) > 1:
+                    raise NotAchievedException(
+                        "MAVLink rangefinder distance mismatch "
+                        "(backend=%u want=%u got=%u)" %
+                        (message.id, distance_cm, message.current_distance))
+                seen_ids.add(message.id)
+
+            if seen_ids != set(output_distances.keys()):
+                raise NotAchievedException(
+                    "Did not receive output from all MAVLink rangefinder backends "
+                    "(want=%s got=%s)" %
+                    (sorted(output_distances.keys()), sorted(seen_ids)))
+        finally:
+            self.context_pop()
+
     def fly_rangefinder_mavlink_distance_sensor(self):
         self.start_subtest("Test mavlink rangefinder using DISTANCE_SENSOR messages")
         self.context_push()
@@ -12656,6 +12856,11 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
         self.do_RTL()
 
+        # we have played with SIM_BARO_DRIFT and that causes the
+        # estimators to build up state that takes time to decay - so
+        # just reboot.
+        self.reboot_sitl()
+
     def AHRSSwitchBackendPositionNEReset(self):
         '''vehicle must not lurch when the active AHRS estimator is changed with divergent NE positions'''
         # glitch the GPS; EKF3 eventually adopts the glitched position
@@ -12774,6 +12979,11 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.progress("In-filter height reset handled cleanly")
 
         self.do_RTL()
+
+        # we have played with SIM_BARO_DRIFT and that causes the
+        # estimators to build up state that takes time to decay - so
+        # just reboot.
+        self.reboot_sitl()
 
     def AHRSSwitchBackendYawReset(self):
         '''vehicle must not spin when the active AHRS estimator is changed with divergent yaws'''
@@ -13405,6 +13615,10 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         # ship will have moved on, so we land on the water which isn't moving
         self.wait_groundspeed(0, 2)
 
+        # we are not at the home location - reboot so the next test starts there
+        self.set_parameter("SIM_SHIP_ENABLE", 0)
+        self.reboot_sitl()
+
     def ParameterValidation(self):
         '''Test parameters are checked for validity'''
         # wait 10 seconds for initialisation
@@ -13506,6 +13720,9 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             raise NotAchievedException("Changed to ALT_HOLD with no altitude estimate")
         self.disarm_vehicle(force=True)
 
+        # we are not at the home location - reboot so the next test starts there
+        self.reboot_sitl()
+
     def DeadReckoningInWind(self):
         '''ensure copter dead-reckoning on drag does not destabilise the EKF in wind'''
         # When GPS is lost in wind, the EKF dead-reckons the vehicle's
@@ -13592,11 +13809,16 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             "EK3_SRC1_VELZ": 0,    # None
             "AHRS_EKF_TYPE": 3,
         })
+        # this message is emitted as the vehicle comes up, so it can
+        # arrive before a wait started afterwards; collect across the
+        # reboot, which empties the collection as it goes
+        self.context_collect('STATUSTEXT')
+
         self.reboot_sitl()
 
         # allow EKF to initialise: validOrigin set from GPS, filter
         # reaches steady AID_NONE state
-        self.wait_statustext("EKF3 IMU0 initialised", timeout=30)
+        self.wait_statustext("EKF3 IMU0 initialised", timeout=30, check_context=True)
 
         # capture baseline reported position
         m = self.assert_receive_message('GLOBAL_POSITION_INT')
@@ -14576,6 +14798,9 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.wait_mode('AUTO')
         self.wait_disarmed(timeout=240)
 
+        # we are not at the home location - reboot so the next test starts there
+        self.reboot_sitl()
+
     def GroundEffectCompensation_takeOffExpected(self):
         '''Test EKF's handling of takeoff-expected'''
         self.change_mode('ALT_HOLD')
@@ -14826,6 +15051,188 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         if feeder.count == 0:
             raise NotAchievedException("Never sent any GPS_INPUT messages")
         self.progress("Sent %u GPS_INPUT messages" % feeder.count)
+
+    def GPSForYawAttitudeCorrection(self):
+        '''Moving baseline GPS yaw must correct for vehicle roll/pitch, incl. under a large board mounting trim'''
+        # The moving-baseline GPS reports the antenna baseline heading in the
+        # NED horizontal plane.  The GPS backend recovers the vehicle yaw by
+        # subtracting the bearing of the body-frame antenna offset, which is
+        # only exact when the vehicle is level.  EKF3 applies the residual
+        # attitude correction using its own roll/pitch estimate.  We give the
+        # baseline a large vertical (Z) component so that a modest vehicle
+        # lean swings the apparent horizontal bearing by tens of degrees:
+        # without the attitude correction the yaw fed to the EKF is then
+        # wrong by a similar amount.
+        #
+        # A large AHRS_TRIM (board-to-frame mounting offset) is also applied as
+        # a frame regression guard.  The EKF works in the autopilot (sensor)
+        # body frame and applies the trim only on output; the correction rotates
+        # the antenna offset by the EKF's own attitude and fuses the result in
+        # that same frame, so the recovered yaw must be unaffected by the trim.
+        # A frame slip (e.g. rotating the offset by the published vehicle
+        # attitude instead) would bias the yaw, and the large-Z baseline
+        # amplifies that bias well past the tolerance below.
+        self.load_default_params_file("copter-gps-for-yaw.parm")
+        self.set_parameters({
+            # Antenna baseline: small fore-aft (X) plus large vertical (Z)
+            # separation, no lateral (Y).  When level the baseline is on the
+            # nose so the recovered yaw equals the vehicle yaw; under roll the
+            # vertical component projects into the horizontal plane.
+            "GPS1_POS_X": -0.15, "GPS1_POS_Y": 0.0, "GPS1_POS_Z": -0.45,
+            "GPS2_POS_X": 0.15, "GPS2_POS_Y": 0.0, "GPS2_POS_Z": 0.45,
+            "SIM_GPS1_POS_X": -0.15, "SIM_GPS1_POS_Y": 0.0, "SIM_GPS1_POS_Z": -0.45,
+            "SIM_GPS2_POS_X": 0.15, "SIM_GPS2_POS_Y": 0.0, "SIM_GPS2_POS_Z": 0.45,
+            # Remove the simulator's heading lag back-projection so the reported
+            # heading reflects the instantaneous attitude.  Otherwise the steady
+            # turn rate of the circle would add a lag term the correction does
+            # not undo, confounding the comparison against truth.
+            "SIM_GPS1_LAG_MS": 0,
+            "SIM_GPS2_LAG_MS": 0,
+            # large board mounting trim, near the AHRS_TRIM limit: exercises the
+            # sensor-vs-vehicle frame handling of the correction (see docstring).
+            "AHRS_TRIM_X": 0.1745,
+            "AHRS_TRIM_Y": 0.1745,
+        })
+        self.reboot_sitl()
+
+        self.wait_gps_fix_type_gte(6, message_type="GPS2_RAW", verbose=True)
+        self.wait_ready_to_arm()
+        self.takeoff(20, mode='GUIDED')
+
+        # fly a gentle circle to hold a steady, modest lean angle.  A large
+        # radius keeps the turn rate (and hence any residual yaw lag) small.
+        self.set_parameters({
+            "CIRCLE_RADIUS_M": 50,
+            "CIRCLE_RATE": 12,
+        })
+        self.change_mode('CIRCLE')
+
+        # Sample the EKF attitude against truth while the vehicle is banked.
+        # copter-gps-for-yaw.parm sets EK3_SRC1_YAW=2 so the moving-baseline
+        # GPS yaw is the EKF's only yaw source: with the attitude correction
+        # in place the EKF yaw tracks truth; without it the fused yaw is wrong
+        # by tens of degrees.  Also require the yaw innovation test ratio to
+        # stay below 1: a wrong measurement that is merely *rejected* by the
+        # innovation gate would leave the EKF yaw temporarily accurate while
+        # it coasts on the gyro, which must not count as a pass.
+        min_roll_deg = 10
+        max_yaw_err_deg = 15
+        wanted_samples = 10
+        good_samples = 0
+        tstart = self.get_sim_time()
+        while True:
+            if self.get_sim_time_cached() - tstart > 90:
+                raise NotAchievedException(
+                    "Only gathered %u/%u banked GPS-yaw samples" % (good_samples, wanted_samples))
+            att = self.assert_receive_message("ATTITUDE")
+            sim = self.assert_receive_message("SIMSTATE")
+            roll_deg = math.degrees(sim.roll)
+            if abs(roll_deg) < min_roll_deg:
+                continue
+            ekf_yaw_deg = math.degrees(att.yaw)
+            true_yaw_deg = math.degrees(sim.yaw)
+            yaw_err_deg = abs(mavextra.wrap_180(ekf_yaw_deg - true_yaw_deg))
+            ekf_status = self.assert_receive_message("EKF_STATUS_REPORT", timeout=10)
+            # compass_variance is sqrt(MAX(magTestRatio, yawTestRatio)) and no
+            # mag fusion runs with a GPS yaw source, so this recovers the EKF
+            # yaw innovation test ratio
+            yaw_test_ratio = ekf_status.compass_variance**2
+            self.progress("roll=%.1f ekf_yaw=%.1f true_yaw=%.1f err=%.1f yaw_test_ratio=%.2f" %
+                          (roll_deg, ekf_yaw_deg, true_yaw_deg, yaw_err_deg, yaw_test_ratio))
+            if yaw_err_deg > max_yaw_err_deg:
+                raise NotAchievedException(
+                    "EKF yaw not corrected for attitude (roll=%.1f deg, yaw err=%.1f deg)" %
+                    (roll_deg, yaw_err_deg))
+            if yaw_test_ratio > 1.0:
+                raise NotAchievedException(
+                    "EKF rejecting GPS yaw (roll=%.1f deg, yaw test ratio=%.2f)" %
+                    (roll_deg, yaw_test_ratio))
+            good_samples += 1
+            if good_samples >= wanted_samples:
+                break
+
+        self.do_RTL()
+
+    def GPSForYawVerticalBaseline(self):
+        '''Moving baseline GPS yaw must be rejected for a vertical baseline'''
+        # The moving-baseline GPS reports the heading of the antenna baseline
+        # in the horizontal plane, so a baseline with no horizontal separation
+        # carries no yaw information: the reported heading is receiver noise.
+        # The driver must reject the solution rather than publish it as yaw.
+        self.load_default_params_file("copter-gps-for-yaw.parm")
+        self.set_parameters({
+            "GPS1_POS_X": 0.0, "GPS1_POS_Y": 0.0, "GPS1_POS_Z": -0.45,
+            "GPS2_POS_X": 0.0, "GPS2_POS_Y": 0.0, "GPS2_POS_Z": 0.45,
+            "SIM_GPS1_POS_X": 0.0, "SIM_GPS1_POS_Y": 0.0, "SIM_GPS1_POS_Z": -0.45,
+            "SIM_GPS2_POS_X": 0.0, "SIM_GPS2_POS_Y": 0.0, "SIM_GPS2_POS_Z": 0.45,
+        })
+        self.reboot_sitl()
+
+        self.wait_gps_fix_type_gte(6, message_type="GPS2_RAW", verbose=True)
+
+        # a yaw field of 0 means the GPS does not provide yaw and 65535 means
+        # it is configured for yaw but currently unable to provide it (north
+        # is reported as 36000)
+        tstart = self.get_sim_time()
+        while self.get_sim_time_cached() - tstart < 10:
+            m = self.assert_receive_message("GPS2_RAW")
+            if m.yaw not in [0, 65535]:
+                raise NotAchievedException(
+                    "Got GPS yaw %.1f deg from a baseline with no horizontal separation" % (m.yaw * 0.01))
+
+    def GPSForYawCompassFallback(self):
+        '''EKF3 must fall back to the compass when GPS yaw is present but unusable'''
+        # With EK3_SRC1_YAW = 3 (GPS with compass fallback) the EKF falls
+        # back to the magnetometer once no usable GPS yaw has been seen for
+        # 10 seconds.  A moving-baseline yaw whose configured antenna offset
+        # is vertical carries no yaw information, so the EKF rejects the
+        # measurement geometrically instead of fusing it.  A rejected
+        # measurement must count as "no usable yaw": the GPS keeps
+        # publishing yaw, so if rejection refreshed the last-yaw timestamp
+        # the fallback would never engage and the vehicle would fly with no
+        # yaw aiding at all.
+        self.load_default_params_file("copter-gps-for-yaw.parm")
+        self.set_parameters({
+            "EK3_SRC1_YAW": 3,  # GPS with compass fallback
+        })
+        self.reboot_sitl()
+
+        self.wait_gps_fix_type_gte(6, message_type="GPS2_RAW", verbose=True)
+        self.wait_ready_to_arm()
+
+        # fly with the healthy lateral baseline from copter-gps-for-yaw.parm
+        # so the EKF fuses GPS yaw and learns that the compass agrees with
+        # it, which arms the fallback
+        self.takeoff(10, mode='GUIDED')
+        self.delay_sim_time(10, reason="learning that the compass agrees with GPS yaw")
+
+        # reconfigure the antennas to a vertical baseline in flight.  The
+        # driver keeps publishing yaw: the simulated antennas keep 0.3 m of
+        # horizontal separation, and the baseline length and vertical drop
+        # still match the configured offsets, so every driver-side check
+        # passes.  The configured offset the yaw is calculated from is
+        # purely vertical, so the EKF rejects every measurement
+        self.context_collect('STATUSTEXT')
+        self.set_parameters({
+            "GPS1_POS_X": 0.0, "GPS1_POS_Y": 0.0, "GPS1_POS_Z": -0.45,
+            "GPS2_POS_X": 0.0, "GPS2_POS_Y": 0.0, "GPS2_POS_Z": 0.45,
+            "SIM_GPS1_POS_X": 0.0, "SIM_GPS1_POS_Y": -0.15, "SIM_GPS1_POS_Z": -0.44,
+            "SIM_GPS2_POS_X": 0.0, "SIM_GPS2_POS_Y": 0.15, "SIM_GPS2_POS_Z": 0.44,
+        })
+
+        # the fallback requires 10 seconds with no usable GPS yaw
+        self.wait_statustext("yaw fallback active", timeout=60, check_context=True)
+
+        # the compass must now be steering the EKF yaw: confirm it tracks truth
+        self.delay_sim_time(5, reason="letting compass fallback settle")
+        att = self.assert_receive_message("ATTITUDE")
+        sim = self.assert_receive_message("SIMSTATE")
+        yaw_err_deg = abs(mavextra.wrap_180(math.degrees(att.yaw) - math.degrees(sim.yaw)))
+        if yaw_err_deg > 20:
+            raise NotAchievedException(
+                "Yaw not tracking truth under compass fallback (err=%.1f deg)" % yaw_err_deg)
+
+        self.do_RTL()
 
     def SMART_RTL_EnterLeave(self):
         '''check SmartRTL behaviour when entering/leaving'''
@@ -15789,6 +16196,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
              self.ModeFollow,
              self.ModeFollow_with_FOLLOW_TARGET,
              self.RangeFinderDrivers,
+             self.MAVLinkRangeFinderIDs,
              self.FlyRangeFinderMAVlink,
              self.FlyRangeFinderSITL,
              self.RangeFinderDriversMaxAlt_LightwareSerial,
@@ -16571,6 +16979,9 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                 self.set_current_waypoint_using_mav_cmd_do_set_mission_current(seq=2)
 
         self.land_and_disarm()
+
+        # we are not at the home location - reboot so the next test starts there
+        self.reboot_sitl()
 
     def start_flying_simple_relhome_mission(self, items):
         '''uploads items, changes mode to auto, waits ready to arm and arms
@@ -17611,6 +18022,14 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             "AUTO_OPTIONS": 3,
         })
 
+        # this checks yaw behaviour by watching the vehicle turn away
+        # from where it started, so it needs to start somewhere other
+        # than north - the SITL start heading is 270.  The vehicle is
+        # left wherever the previous test put it, which can be pointing
+        # very nearly north:
+        #     MissionRTLYawBehaviour (...) (Bad original heading 1)
+        self.reboot_sitl()
+
         self.start_subtest("behaviour with WP_YAW_BEHAVE set to next-waypoint-except-RTL")
         self.upload_simple_relhome_mission([
             #                                      N   E  U
@@ -17771,16 +18190,27 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         """Test common origin between EKF2 and EKF3"""
         # start on EKF2
         self.set_parameters({
-            'AHRS_EKF_TYPE': 2,
             'EK2_ENABLE': 1,
             'EK3_CHECK_SCALE': 1, # make EK3 slow to get origin
         })
-        self.reboot_sitl()
-
+        # collect before the reboot: the messages waited for below are
+        # emitted as the vehicle comes up, so a collection started
+        # afterwards is created too late to catch them.  reboot_sitl()
+        # empties collections as it goes, so the identical messages
+        # from before the reboot cannot satisfy those waits.
         self.context_collect('STATUSTEXT')
+
+        self.reboot_sitl()
 
         self.wait_statustext("EKF2 IMU0 origin set", timeout=60, check_context=True)
         self.wait_statustext("EKF2 IMU0 is using GPS", timeout=60, check_context=True)
+
+        # "AHRS: ... active" is emitted only when the active backend
+        # changes, so ask for EKF2 here rather than before the reboot:
+        # a vehicle which boots already configured for it comes up with
+        # it active and says nothing, and the wait would be left
+        # matching the message from before the reboot.
+        self.set_parameter('AHRS_EKF_TYPE', 2)
         self.wait_statustext("EKF2 active", timeout=60, check_context=True)
 
         # get EKF2 origin
@@ -17882,9 +18312,14 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             'AHRS_EKF_TYPE': 11,     # configured EXTERNAL: origin pre-arm check active
             'INS_GYR_CAL': 1,
         })
-        self.reboot_sitl()
-
+        # collect before the reboot: the messages waited for below are
+        # emitted as the vehicle comes up, so a collection started
+        # afterwards is created too late to catch them.  reboot_sitl()
+        # empties collections as it goes, so the identical messages
+        # from before the reboot cannot satisfy those waits.
         self.context_collect('STATUSTEXT')
+
+        self.reboot_sitl()
 
         # EKF3 obtains an origin from the SITL GPS:
         self.wait_statustext("EKF3 IMU0 origin set", timeout=60, check_context=True)
@@ -17911,9 +18346,23 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         """Test AHRS option to record and reuse origin"""
         self.context_push()
 
+        # The firmware writes these itself once the origin is known, so
+        # register them now, while they are still as the session started;
+        # otherwise the origin recorded here is left behind for every test
+        # which follows.
+        self.context_preserve_parameters([
+            'AHRS_ORIGIN_LAT', 'AHRS_ORIGIN_LON', 'AHRS_ORIGIN_ALT',
+        ])
         # Set AHRS_OPTIONS = 8 (UseRecordedOrigin)
         self.set_parameter('AHRS_OPTIONS', 8)
         self.set_parameter('LOG_DISARMED', 1)
+
+        # AP_AHRS records the origin on the transition to having one
+        # ("if (origin_ok && !state.origin_ok)"), so if an earlier test in
+        # this session has already given the EKF an origin then the edge
+        # never comes again and nothing is written.  Reboot so that the
+        # transition happens with the option above already set.
+        self.reboot_sitl()
 
         # wait for vehicle to be ready to arm which means origin should have been written
         self.wait_ready_to_arm()
@@ -17953,8 +18402,12 @@ RTL_ALT_M 123
 RTL_ALT_FINAL_M 129
 """)
         defaults_filepath.close()
+        # wipe: a defaults file only supplies parameters which are not
+        # already saved, so without this whatever an earlier test stored
+        # for DISARM_DELAY wins over the @READONLY value being tested:
+        #     ReadOnlyDefaults (...) (parameter DISARM_DELAY want=77.000000 got=10.000000)
         self.customise_SITL_commandline([
-        ], defaults_filepath=defaults_filepath.name)
+        ], defaults_filepath=defaults_filepath.name, wipe=True)
 
         self.context_collect('STATUSTEXT')
         self.send_set_parameter_direct("DISARM_DELAY", 88)
@@ -17997,7 +18450,15 @@ RTL_ALT_M 111
         f2.write("RTL_ALT_M 750\n")
         f2.close()
 
-        self.customise_SITL_commandline([], defaults_filepath=[f1.name, f2.name])
+        # wipe: a defaults file only supplies parameters which are not
+        # already saved, so with the eeprom left alone anything an
+        # earlier test stored wins over the file we are testing -
+        # set_autodisarm_delay() saves DISARM_DELAY, and this test then
+        # reads back the stored value rather than the one from f1:
+        #     DefaultsCommaList (...) (parameter DISARM_DELAY want=20.000000 got=10.000000)
+        self.customise_SITL_commandline([],
+                                        defaults_filepath=[f1.name, f2.name],
+                                        wipe=True)
 
         # f2 overrides RTL_ALT_M; DISARM_DELAY comes only from f1
         self.assert_parameter_value("RTL_ALT_M", 750)
@@ -18142,6 +18603,9 @@ RTL_ALT_M 111
 
     def RTLYaw(self):
         '''test that vehicle yaws to original heading on RTL'''
+        # the vehicle's heading is whatever the previous test left it
+        # at - reboot to get the known spawn heading
+        self.reboot_sitl()
         # 0 is WP_YAW_BEHAVIOR_NONE
         # 1 is WP_YAW_BEHAVIOR_LOOK_AT_NEXT_WP
         # 2 is WP_YAW_BEHAVIOR_LOOK_AT_NEXT_WP_EXCEPT_RTL
@@ -18165,6 +18629,13 @@ RTL_ALT_M 111
 
     def CompassLearnCopyFromEKF(self):
         '''test compass learning whereby we copy learnt offsets from the EKF'''
+        # a successful learn makes the firmware save the offsets it found,
+        # which the suite has no record of and cannot put back
+        self.context_preserve_parameters([
+            "COMPASS_OFS_X", "COMPASS_OFS_Y", "COMPASS_OFS_Z",
+            "COMPASS_OFS2_X", "COMPASS_OFS2_Y", "COMPASS_OFS2_Z",
+            "COMPASS_OFS3_X", "COMPASS_OFS3_Y", "COMPASS_OFS3_Z",
+        ])
         self.reboot_sitl()
         self.context_push()
         self.set_parameters({
@@ -18377,6 +18848,9 @@ RTL_ALT_M 111
         self.do_land()
         self.set_rc(9, 1000)
 
+        # we are not at the home location - reboot so the next test starts there
+        self.reboot_sitl()
+
     def RTLStoppingDistanceSpeed(self):
         '''test stopping distance unaffected by RTL speed'''
         self.upload_simple_relhome_mission([
@@ -18455,6 +18929,7 @@ RTL_ALT_M 111
         self.set_parameters({
             "MAV_GCS_SYSID": 250,
             "SIM_RC_FAIL": 1,  # no-pulses
+            "LOG_DISARMED": 1,  # we are timing sensitive, avoid stall on log open
         })
         self.reboot_sitl()
 
@@ -19308,6 +19783,9 @@ return update, 1000
             self.DeadReckoningInWind,
             self.GPSForYaw,
             self.GPS_INPUT,
+            self.GPSForYawAttitudeCorrection,
+            self.GPSForYawVerticalBaseline,
+            self.GPSForYawCompassFallback,
             self.DefaultIntervalsFromFiles,
             self.GPSTypes,
             self.MultipleGPS,

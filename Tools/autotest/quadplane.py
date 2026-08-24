@@ -1581,8 +1581,20 @@ class AutoTestQuadPlane(vehicle_test_suite.TestSuite):
         self.set_current_waypoint(0, check_afterwards=False)
         self.fly_mission('mission.txt')
 
+    # The gains quicktune saves when it finishes.  Written by the applet
+    # or the C++ implementation rather than by us, so the suite cannot
+    # revert them and they would persist for the rest of the session.
+    # everything quicktune can save; the axes and suffixes here are
+    # AP_Quicktune::Param (libraries/AP_Quicktune/AP_Quicktune.h)
+    quicktune_saved_gains = [
+        "Q_A_RAT_%s_%s" % (axis, suffix)
+        for axis in ("RLL", "PIT", "YAW")
+        for suffix in ("P", "I", "D", "SMAX", "FLTT", "FLTD", "FLTE", "FF")
+    ]
+
     def VTOLQuicktune(self):
         '''VTOL Quicktune'''
+        self.context_preserve_parameters(self.quicktune_saved_gains)
         self.install_applet_script_context("VTOL-quicktune.lua")
 
         self.set_parameters({
@@ -1621,12 +1633,16 @@ class AutoTestQuadPlane(vehicle_test_suite.TestSuite):
         # to test aux function method, use aux fn for save
         self.run_auxfunc(300, 2)
         self.wait_text("Tuning: saved", check_context=True)
+        # and put the switch back: aux function state survives
+        # context_pop(), and this test does not reboot afterwards
+        self.run_auxfunc(300, 0)
         self.change_mode("QLAND")
 
         self.wait_disarmed(timeout=120)
 
     def VTOLQuicktune_CPP(self):
         '''VTOL Quicktune in C++'''
+        self.context_preserve_parameters(self.quicktune_saved_gains)
         self.set_parameters({
             "RC7_OPTION": 181,
             "QWIK_ENABLE" : 1,
@@ -1708,16 +1724,11 @@ class AutoTestQuadPlane(vehicle_test_suite.TestSuite):
 
         self.install_applet_script_context("plane_precland.lua")
 
-        here = self.mav.location()
-        target = self.offset_location_ne(here, 20, 0)
-
         self.set_parameters({
             "SCR_ENABLE": 1,
             "PLND_ENABLED": 1,
             "PLND_TYPE": 4,
             "SIM_PLD_ENABLE":   1,
-            "SIM_PLD_LAT" : target.lat,
-            "SIM_PLD_LON" : target.lng,
             "SIM_PLD_HEIGHT" : 0,
             "SIM_PLD_ALT_LMT" : 50,
             "SIM_PLD_DIST_LMT" : 30,
@@ -1741,6 +1752,19 @@ class AutoTestQuadPlane(vehicle_test_suite.TestSuite):
         self.wait_text("PLND: Loaded", check_context=True)
 
         self.wait_ready_to_arm()
+
+        # place the target near the vehicle's current position - which,
+        # having just rebooted, is the spawn position.  Sampling the
+        # position before the reboot places the target wherever the
+        # previous test happened to leave the vehicle, which can be
+        # hundreds of metres from where QRTL will descend:
+        here = self.mav.location()
+        target = self.offset_location_ne(here, 20, 0)
+        self.set_parameters({
+            "SIM_PLD_LAT": target.lat,
+            "SIM_PLD_LON": target.lng,
+        })
+
         self.change_mode("GUIDED")
         self.arm_vehicle()
         self.takeoff(60, 'GUIDED')
@@ -1827,6 +1851,10 @@ class AutoTestQuadPlane(vehicle_test_suite.TestSuite):
         max_distance = 1.2
         if distance > max_distance:
             raise NotAchievedException(f"Did not land within {max_distance}m of ship {distance=}")
+
+        # we are not at the home location - reboot so the next test starts there
+        self.set_parameter("SIM_SHIP_ENABLE", 0)
+        self.reboot_sitl()
 
     def RCDisableAirspeedUse(self):
         '''check disabling airspeed using RC switch'''
@@ -2683,6 +2711,12 @@ class AutoTestQuadPlane(vehicle_test_suite.TestSuite):
 
         self.progress("Recovery AltChange %.1fm" % alt_change)
 
+        # stop asking for inverted flight.  Aux function state is not a
+        # parameter, so context_pop() does not clear it, and this test
+        # does not reboot - without this the next test on this worker
+        # starts with inverted flight still commanded.
+        self.run_auxfunc(43, 0)
+
         max_alt_change = 3
         if alt_change > max_alt_change:
             raise NotAchievedException("Recovery AltChange too high %.1f > %.1f" % (alt_change, max_alt_change))
@@ -3314,7 +3348,10 @@ class AutoTestQuadPlane(vehicle_test_suite.TestSuite):
         defaults_file.write("SERVO17_FUNCTION %d\n" % k_motor1)
         defaults_file.close()
 
-        self.customise_SITL_commandline([], defaults_filepath=defaults_file.name)
+        # wipe: a defaults file only supplies parameters which are not
+        # already saved, so anything an earlier test stored for
+        # SERVO17_FUNCTION would win over the default under test
+        self.customise_SITL_commandline([], defaults_filepath=defaults_file.name, wipe=True)
         self.assert_parameter_values({"SERVO17_FUNCTION": k_motor1})
 
         data, _ = self.ftp_burst_read("@PARAM/param.pck?withdefaults=1")
@@ -3418,6 +3455,17 @@ class AutoTestQuadPlane(vehicle_test_suite.TestSuite):
         })
         self.do_RTL()
 
+        # SIM_BARO_DRIFT is a rate: zeroing it stops the offset it has
+        # accumulated from growing but leaves it in place for the life
+        # of the SITL process, and no parameter records it, so a
+        # context revert cannot undo it.  Recalibrating the barometer
+        # moves the ground reference but leaves the EKF to absorb the
+        # resulting step over several seconds, during which the next
+        # test can arm and take home from a height still being
+        # corrected.  Reboot instead: it discards the simulator and
+        # filter state together, with no transient to race.
+        self.reboot_sitl()
+
     def TECSThrSpikeOnModeChange(self):
         ''' Regression test for issue #33871. '''
 
@@ -3473,6 +3521,59 @@ class AutoTestQuadPlane(vehicle_test_suite.TestSuite):
         self.context_pop()
 
         self.do_RTL()
+
+    def CircuitStatusScript(self):
+        '''test CircuitStatus lua driver against a CAN periph'''
+        self.context_collect('STATUSTEXT')
+
+        self.install_driver_script_context("CircuitStatus.lua")
+
+        # CAN_P1_DRIVER=1 is needed so plane publishes the SITL multicast
+        # sim state the periph blocks on at boot. BATT_MONITOR=8
+        # (DroneCAN) gives a reference monitor fed by BatteryInfo from
+        # the same periph battery the CircuitStatus messages come from.
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "CAN_P1_DRIVER": 1,
+            "BATT_MONITOR": 8,  # DroneCAN
+            "BATT2_MONITOR": 29,  # scripting
+            "BATT3_MONITOR": 29,  # scripting
+        })
+        self.restart_SITL_frame('quadplane-can', customisations=[])
+
+        # first boot of the script creates DCS_NUM_CIRCUITS; setting it
+        # and rebooting creates the per-circuit parameters
+        self.set_parameters({
+            "DCS_NUM_CIRCUITS": 2,
+        })
+        self.reboot_sitl()
+        self.wait_statustext("CircuitStatus: loaded 2 circuits", check_context=True, timeout=60)
+
+        # per-circuit parameters are polled at runtime, so no further
+        # reboot is needed. The SITL periph sends a circuit per battery
+        # backend with circuit_id of instance+1; map its first battery
+        # to both scripting monitors
+        self.set_parameters({
+            "DCS1_CIRCUIT_ID": 1,
+            "DCS1_BATT_IDX": 2,
+            "DCS2_CIRCUIT_ID": 1,
+            "DCS2_BATT_IDX": 3,
+        })
+
+        # the scripting monitors should match the DroneCAN reference
+        # monitor, with tolerance for float16 quantisation and sampling
+        # time differences. SYS_STATUS gives the pack voltage of the
+        # reference monitor; BATTERY_STATUS voltages[] of the DroneCAN
+        # monitor holds per-cell voltages so is not comparable
+        self.set_message_rate_hz('BATTERY_STATUS', 10)
+        ref = self.assert_receive_message('SYS_STATUS', timeout=10)
+        for instance in 1, 2:
+            self.wait_message_field_values('BATTERY_STATUS', {
+                "voltages[0]": ref.voltage_battery,
+            }, instance=instance, epsilon=100, timeout=60)
+            self.wait_message_field_values('BATTERY_STATUS', {
+                "current_battery": ref.current_battery,
+            }, instance=instance, epsilon=25, timeout=60)
 
     def tests(self):
         '''return list of all tests'''
@@ -3560,5 +3661,6 @@ class AutoTestQuadPlane(vehicle_test_suite.TestSuite):
             self.HighServoFunctionDefault,
             self.WPSpdChange,
             self.TECSThrSpikeOnModeChange,
+            self.CircuitStatusScript,
         ])
         return ret

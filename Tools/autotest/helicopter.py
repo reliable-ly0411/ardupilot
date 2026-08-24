@@ -22,6 +22,15 @@ class AutoTestHelicopter(AutoTestCopter):
 
     sitl_start_loc = mavutil.location(40.072842, -105.230575, 1586, 0)     # Sparkfun AVC Location
 
+    def max_distance_from_startup_location_at_end_of_test(self):
+        # this class inherits ArduCopter's tests but not its
+        # discipline of leaving the vehicle where it started: a heli
+        # which takes off and lands drifts further than a multirotor
+        # (CI measured 2.5m and 3.1m for the takeoff tests), and the
+        # autorotation tests deliberately end well away from the
+        # startup location (110m).
+        return None
+
     def vehicleinfo_key(self):
         return 'Helicopter'
 
@@ -1009,7 +1018,10 @@ class AutoTestHelicopter(AutoTestCopter):
             "ARSPD_PIN": 1,      # Analog airspeed driver pin for SITL
         })
         # set the start location to CMAC to use same test script as other vehicles
-
+        # sitl_start_location() returns this for the rest of the session,
+        # so every later start_SITL() would come up at CMAC rather than
+        # at the heli's own start location; put it back afterwards.
+        self.context_preserve_attribute("sitl_start_loc")
         self.sitl_start_loc = mavutil.location(-35.362881, 149.165222, 582.000000, 90.0)   # CMAC
         self.customise_SITL_commandline(["--home", "%s,%s,%s,%s"
                                          % (-35.362881, 149.165222, 582.000000, 90.0)])

@@ -1089,6 +1089,18 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
         self.set_parameter("RC_OVERRIDE_TIME", 0)
         self.wait_rc_channel_value(ch, 1000)
         self.set_parameter("RC_OVERRIDE_TIME", old)
+        # an override is only live for RC_OVERRIDE_TIME seconds after it
+        # arrives, and the two parameter round-trips above can eat more
+        # than that in simulated time - one run came back to find the
+        # override long expired, and sat watching chan2 stay at 1000.
+        # Send a fresh one, which is what re-enabling overrides has to
+        # act upon anyway.
+        self.progress("Sending override message %u" % ch_override_value)
+        self.mav.mav.rc_channels_override_send(
+            1, # target system
+            1, # targe component
+            *channels
+        )
         self.wait_rc_channel_value(ch, ch_override_value)
 
         ch_override_value = 1720
@@ -1505,6 +1517,19 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
         self.load_rally_using_mavproxy("rover-test-rally.txt")
         self.assert_parameter_value('RALLY_TOTAL', 2)
 
+        # the file's rally points are fixed coordinates chosen relative
+        # to the SITL startup location, but RTL returns to whichever of
+        # home and the rally points is closest - and home is wherever
+        # the vehicle happened to be.  Re-place them relative to us so
+        # the rally point is the closer of the two once we have driven
+        # away, whatever a previous test did with the vehicle:
+        here = self.get_location()
+        rally_locs = [
+            self.offset_location_ne(here, 19.8, 33.0),
+            self.offset_location_ne(here, 99.1, -114.7),
+        ]
+        self.upload_rally_points_from_locations(rally_locs)
+
         self.wait_ready_to_arm()
         self.arm_vehicle()
 
@@ -1516,8 +1541,7 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
 
         self.change_mode("RTL")
 
-        # location copied in from rover-test-rally.txt:
-        loc = Location(40.071553, -105.229401, 1583, AltFrame.ABSOLUTE)
+        loc = rally_locs[0]
 
         self.wait_location(loc, accuracy=accuracy, minimum_duration=10, timeout=45)
         self.disarm_vehicle()
@@ -2456,6 +2480,15 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
     # FIXME: add a test that fences enclose an area (e.g. all the points aren't the same value!
     def Offboard(self, timeout=90):
         '''Test Offboard Control'''
+        # rover-guided-mission.txt is in absolute coordinates, anchored
+        # at the SITL startup location, and the run has to get all the
+        # way round it and back home inside the timeout.  Starting from
+        # wherever a previous test left the vehicle adds the drive out
+        # to the mission and the drive home again at the end, and the
+        # budget does not cover that:
+        #     Offboard (Test Offboard Control) (Didn't complete)
+        # with the mission on its last item, RTL, when time ran out.
+        self.reboot_sitl()
         self.load_mission("rover-guided-mission.txt")
         self.wait_ready_to_arm(require_absolute=True)
         self.arm_vehicle()
@@ -4861,8 +4894,11 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
             "FENCE_ACTION": 0,
         })
         fence_middle = self.offset_location_ne(here, 0, 30)
-        # FIXME: this might be nowhere near "here"!
-        expected_stopping_point = Location.latlon_only(40.0713376, -105.2295738)
+        # the fences above are placed relative to "here", so the point we
+        # stop at is too: just short of the exclusion fence 20m to our
+        # east.  This used to be a fixed location, which only worked
+        # while "here" happened to be the startup location.
+        expected_stopping_point = self.offset_location_ne(here, -1.05, 15.05)
         self.drive_somewhere_stop_at_boundary(
             fence_middle,
             expected_stopping_point,
@@ -6263,6 +6299,11 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
             "PLND_ORIENT": 0,
         })
 
+        # the loop below reboots, which returns the vehicle to the SITL
+        # startup location; take our reference from there rather than
+        # from wherever a previous test left us, or the target ends up
+        # that much further away than the drive to it allows for:
+        self.reboot_sitl()
         start = self.get_location()
         target = self.offset_location_ne(start, 50, 0)
         self.progress("Setting target to %f %f" % (start.lat, start.lng))
@@ -6497,7 +6538,11 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
         here = self.get_location()
         target_loc = self.offset_location_ne(here, 2000, 0)
         self.send_guided_mission_item(target_loc)
-        self.wait_distance_to_home(20, 100)
+        # the vehicle starts pointing away from the target, so it turns
+        # before it makes any ground: wait_distance_to_home()'s default
+        # ten seconds is enough only if that turn is quick, and one run
+        # spent them reaching 14.4m of the wanted 20m
+        self.wait_distance_to_home(20, 100, timeout=60)
 
         self.run_cmd(mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH)
         self.wait_mode('RTL')
@@ -6722,6 +6767,13 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
                         extra_configure_args=['--enable-PPP', '--enable-math-check-indexes', '--debug'])
 
         self.reboot_sitl()
+
+        # the applet creates its WEB_* parameters at runtime, and they
+        # only go away when the vehicle comes up without it; removing the
+        # script from disk at context_pop() does not unload the copy
+        # already running.  Nothing here has customised the SITL
+        # commandline, so ask for the standard reset explicitly.
+        self.context_get().sitl_commandline_customised = True
 
         self.progress("Starting PPP daemon")
         pppd = util.start_PPP_daemon("192.168.14.15:192.168.14.13", '127.0.0.1:5765')

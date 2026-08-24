@@ -2496,6 +2496,18 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.test_adsb_send_threatening_adsb_message(here)
         m = self.assert_not_receive_message('COLLISION', timeout=4)
 
+        # AP_Avoidance::disable() writes AVD_ENABLE's live value.  Not
+        # saving it is correct - a switch position must not change what
+        # is stored - but writing the parameter at all is a firmware bug:
+        # the switch should drive a separate runtime flag, as
+        # AC_Avoid::proximity_avoidance_enable() does.  Until that is
+        # fixed, leaving the switch down means the live value reads 0
+        # while storage holds the 1 we set above, so the context restore
+        # asks for 0, sees 0, writes nothing, and the next boot in this
+        # session comes up with avoidance enabled.  Put the switch back.
+        self.set_rc(12, 2000)
+        self.delay_sim_time(1, reason="RC switch to be polled")
+
     def GuidedRequest(self, target_system=1, target_component=1):
         '''Test handling of MISSION_ITEM in guided mode'''
         self.progress("Takeoff")
@@ -4939,6 +4951,15 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.run_auxfunc(64, 0, run_cmd=run_cmd)
         self.wait_statustext("RevThrottle: DISABLE", check_context=True)
         self.run_auxfunc(65, 2, run_cmd=run_cmd)  # 65 == GPS_DISABLE
+        # ... and put it back.  Aux function state is not a parameter, so
+        # context_pop() does not restore it, and the suite no longer
+        # restarts the SITL between tests - so without this every test
+        # which follows on this worker inherits a vehicle with no GPS,
+        # and an EKF which never starts:
+        #     AHRS2Logging (...) (Failed to get EKF.flags=831)      [EKF_UNINITIALIZED]
+        #     AHRS_ORIENTATION (...) (GPS status bits did not become good)
+        self.run_auxfunc(65, 0, run_cmd=run_cmd)
+        self.wait_gps_sys_status_not_present_or_enabled_and_healthy()
 
         self.start_subtest("Bad auxfunc")
         self.run_auxfunc(
@@ -5211,13 +5232,37 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             self.print_exception_caught(e)
             ex = e
 
-        self.reboot_sitl()
+        # The SIGALRM above makes SITL putenv("SITL_WATCHDOG_RESET=1")
+        # and exec itself, and reboot_sitl() execs too, so that variable
+        # - and the internal error every boot then raises because of it -
+        # follows this process for as long as it lives.  Whatever runs
+        # next on this SITL cannot become armable:
+        #     PreArm: Internal errors 0x800 l:243 watchdog_rst
+        # Rebooting does not shake it off; only a new process does.
+        # customise_SITL_commandline() starts one, and tells the
+        # framework it did, so the tidy-up afterwards knows the SITL has
+        # been replaced - doing the stop/start by hand here left the
+        # next test with no vehicle at all.
+        self.customise_SITL_commandline([])
 
         if ex is not None:
             raise ex
 
+    # The gains a completed autotune saves.  The firmware writes these,
+    # so the suite has no record of them and they would otherwise persist
+    # for the rest of the session.
+    autotune_saved_gains = [
+        "PTCH2SRV_RMAX_DN", "PTCH2SRV_RMAX_UP", "PTCH2SRV_TCONST",
+        "PTCH_RATE_D", "PTCH_RATE_FF", "PTCH_RATE_FLTD",
+        "PTCH_RATE_FLTT", "PTCH_RATE_I", "PTCH_RATE_P",
+        "RLL2SRV_RMAX", "RLL2SRV_TCONST",
+        "RLL_RATE_D", "RLL_RATE_FF", "RLL_RATE_FLTD",
+        "RLL_RATE_FLTT", "RLL_RATE_I", "RLL_RATE_P",
+    ]
+
     def AUTOTUNE(self):
         '''Test AutoTune mode'''
+        self.context_preserve_parameters(self.autotune_saved_gains)
 
         # Prior to 2026-07-15, the SITL airspeed sensor was reading about 5%
         # slower than actual during this test. We bump the scaling airspeed by
@@ -5323,6 +5368,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
 
     def AutotuneFiltering(self):
         '''Test AutoTune mode with filter updates disabled'''
+        self.context_preserve_parameters(self.autotune_saved_gains)
         self.set_parameters({
             "AUTOTUNE_OPTIONS": 3,
             # some filtering is required for autotune to complete
@@ -6746,6 +6792,12 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             self.generic_mission_filepath_for_filename("flaps.txt"),
         ], checkfail=True)
         self.start_SITL()
+        # run_mission.py flew a SITL of its own in this directory, so the
+        # storage is not as we left it - notably the parameters the suite
+        # relies on, LOG_DISARMED and the two logging rate limits, are no
+        # longer set, and nothing here has put them back.  Ask for the
+        # standard reset at the end of the test.
+        self.context_get().sitl_commandline_customised = True
 
     def MAV_CMD_GUIDED_CHANGE_ALTITUDE(self):
         '''test handling of MAV_CMD_GUIDED_CHANGE_ALTITUDE'''
@@ -7068,6 +7120,15 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             "FS_LONG_ACTN": 3,
         })
         for command in self.run_cmd, self.run_cmd_int:
+            # We release the parachute sitting on the ground, which the
+            # vehicle permits only while it has never flown:
+            # parachute_manual_release() skips its "Too low" check on
+            # last_flying_ms being zero, and that is sticky for the life
+            # of the boot.  Any test which flew before us leaves it set
+            # and the release is refused with MAV_RESULT_FAILED - so
+            # start from a fresh boot rather than only leaving one
+            # behind for the iteration which follows.
+            self.reboot_sitl()
             self.wait_servo_channel_value(9, 1100)
             self.wait_ready_to_arm()
             self.arm_vehicle()
@@ -7077,7 +7138,6 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             )
             self.wait_servo_channel_value(9, 1300)
             self.disarm_vehicle()
-            self.reboot_sitl()
 
     def _MAV_CMD_DO_GO_AROUND(self, command):
         self.load_mission("mission.txt")
@@ -7529,6 +7589,19 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
 
     def CompassLearnInFlight(self):
         '''check we can learn compass offsets in flight'''
+        # a successful learn makes the firmware save the offsets it found,
+        # which the suite has no record of and cannot put back
+        self.context_preserve_parameters([
+            "COMPASS_OFS_X", "COMPASS_OFS_Y", "COMPASS_OFS_Z",
+            "COMPASS_OFS2_X", "COMPASS_OFS2_Y", "COMPASS_OFS2_Z",
+            "COMPASS_OFS3_X", "COMPASS_OFS3_Y", "COMPASS_OFS3_Z",
+        ])
+        # learning completes only when the EKF's GSF yaw estimator is
+        # converged.  Flying done by earlier tests in the same boot can
+        # leave the EKF in a state where the GSF hovers above the
+        # convergence threshold for the length of this test - so reboot
+        # to run from a known state
+        self.reboot_sitl()
         self.context_push()
         self.set_parameters({
             "COMPASS_OFS_X": 1100,
@@ -7545,7 +7618,12 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.set_parameters({
             "COMPASS_OFS_X": 1100,
         })
-        self.send_set_parameter("COMPASS_LEARN", 3)  # 3 is in-flight learning
+        # the autopilot zeroes COMPASS_LEARN itself when learning
+        # completes, so a verified parameter-set could race with that
+        # and re-trigger learning; send it unverified, but tracked so
+        # a test failure reverts it - a leaked COMPASS_LEARN=3 stops
+        # the EKFs using the compass, breaking all subsequent tests
+        self.send_set_parameter("COMPASS_LEARN", 3, add_to_context=True)  # 3 is in-flight learning
         self.wait_parameter_value("COMPASS_LEARN", 0)
         self.assert_parameter_value("COMPASS_OFS_X", old_compass_ofs_x, epsilon=30)
         self.fly_home_land_and_disarm()
@@ -7647,6 +7725,11 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.install_example_script_context('simple_loop.lua')
         self.set_parameters({
             'SCR_ENABLE': 1,
+            # we never arm, so without this the vehicle is not logging
+            # at all: current_onboard_log_filepath() then hands back a
+            # log some earlier test left behind, which will never
+            # contain our record however long we wait for it.
+            'LOG_DISARMED': 1,
         })
         self.reboot_sitl()
         self.wait_ready_to_arm()
@@ -7666,6 +7749,11 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.install_example_script_context('simple_loop.lua')
         self.set_parameters({
             'SCR_ENABLE': 1,
+            # we never arm, so without this the vehicle is not logging
+            # at all: current_onboard_log_filepath() then hands back a
+            # log some earlier test left behind, which will never
+            # contain our record however long we wait for it.
+            'LOG_DISARMED': 1,
         })
         self.reboot_sitl()
         self.wait_ready_to_arm()
@@ -7685,6 +7773,8 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.install_example_script_context('simple_named_string.lua')
         self.set_parameters({
             'SCR_ENABLE': 1,
+            # we never arm; see LoggedNamedValueFloat
+            'LOG_DISARMED': 1,
         })
         self.reboot_sitl()
         self.wait_ready_to_arm()
@@ -8881,6 +8971,19 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             self.MAVFTPBurstEOFOffset,
             self.MAVFTPBurstMissionDat,
             self.MAVFTPParamPck,
+            self.MAVFTPListDirectoryEdgeCases,
+            self.MAVFTPListDirectoryLongNames,
+            self.MAVFTPDuplicateRequest,
+            self.MAVFTPUnknownOpcodeNack,
+            self.MAVFTPReadFile,
+            self.MAVFTPCalcFileCRC32,
+            self.MAVFTPRename,
+            self.MAVFTPFileCommandsMAVProxy,
+            self.MAVFTPCrcCompareMAVProxy,
+            self.MAVFTPGapReadMAVProxy,
+            self.MAVFTPListDirectoryInterleavedPut,
+            self.MAVFTPListDirectoryInterleavedGet,
+            self.MAVFTPListDirectoryTabInNameMAVProxy,
             self.AUTOTUNE,
             self.AutotuneFiltering,
             self.MegaSquirt,
@@ -9052,6 +9155,13 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         # rule out.  Reboot so the SITL aircraft is reliably on the
         # ground at the start of the test.
         self.reboot_sitl()
+        # this test never arms, so its boot only produces an onboard
+        # log if disarmed logging is enabled.  LOG_DISARMED=1 is only a
+        # suite *default*, and predecessors which restart SITL with
+        # their own defaults can leave it 0 - in which case this boot
+        # has no log and the scan below silently reads the previous
+        # boot's log
+        self.set_parameter("LOG_DISARMED", 1)
         self.wait_ready_to_arm()
 
         # suspend periodic resets so baro drift can accumulate
@@ -9080,6 +9190,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         dfreader = self.dfreader_for_current_onboard_log()
         last_pd = None
         reset_us = None
+        seen_test_window = False
         peak_excursion = 0.0
         while True:
             m = dfreader.recv_match(type='XKF1', condition='XKF1.C==0')
@@ -9087,6 +9198,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
                 break
             if m.TimeUS < drift_start_us:
                 continue
+            seen_test_window = True
             if reset_us is None:
                 if last_pd is not None and abs(m.PD - last_pd) > 0.5:
                     reset_us = m.TimeUS
@@ -9097,6 +9209,11 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             if m.TimeUS - reset_us > 2.0e6:
                 break
             peak_excursion = max(peak_excursion, abs(m.PD))
+
+        if not seen_test_window:
+            raise NotAchievedException(
+                "Onboard log contains no data from this test's "
+                "timeframe - scanned a previous boot's log?")
 
         if reset_us is None:
             raise NotAchievedException(
@@ -9110,6 +9227,11 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
                 "Post-reset altitude transient exceeds 0.1 m: %.3f m "
                 "(stale baro buffer not flushed on resetHeightDatum)" %
                 peak_excursion)
+
+        # we have played with SIM_BARO_DRIFT and that causes the
+        # estimators to build up state that takes time to decay - so
+        # just reboot.
+        self.reboot_sitl()
 
     def PPPPeriph(self):
         '''verify PPP-over-TCP link to an AP_Periph (sitl_periph_PPP) companion'''
@@ -9161,6 +9283,9 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             "InteractTest": "requires user interaction",
             "ClimbThrottleSaturation": "requires https://github.com/ArduPilot/ardupilot/pull/27106 to pass",
             "SoaringClimbRate": "very bad sink rate",
+            "MAVFTPListDirectoryInterleavedPut": "needs a MAVProxy which does not continue a listing by mutating the last op sent; see https://github.com/ArduPilot/MAVProxy",  # noqa:E501
+            "MAVFTPListDirectoryInterleavedGet": "needs a MAVProxy which does not continue a listing by mutating the last op sent; see https://github.com/ArduPilot/MAVProxy",  # noqa:E501
+            "MAVFTPListDirectoryTabInNameMAVProxy": "needs a MAVProxy which takes the size from the end of a listing entry; see https://github.com/ArduPilot/MAVProxy",  # noqa:E501
         }
 
 

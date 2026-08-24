@@ -532,6 +532,7 @@ def run_step(step):
     if opts.speedup is not None:
         fly_opts["speedup"] = opts.speedup
 
+    fly_opts["check_parameter_leaks"] = opts.check_parameter_leaks
     fly_opts["move_logs_on_test_failure"] = opts.move_logs_on_test_failure
 
     # handle "test.Copter" etc:
@@ -985,6 +986,19 @@ if __name__ == "__main__":
                          default=None,
                          type='int',
                          help='speedup to run the simulations at')
+    group_sim.add_option("--check-parameter-leaks",
+                         action='store_true',
+                         dest='check_parameter_leaks',
+                         default=True,
+                         help='after each test, check no parameter the suite '
+                         'could not revert has been left changed; catches '
+                         'leaks into the tests which follow.  On by default')
+    group_sim.add_option("--no-check-parameter-leaks",
+                         action='store_false',
+                         dest='check_parameter_leaks',
+                         help='do not check for parameter leaks after each '
+                         'test.  The check downloads the full parameter set '
+                         'once per test')
     group_sim.add_option("--valgrind",
                          default=False,
                          action='store_true',
@@ -1224,7 +1238,7 @@ if __name__ == "__main__":
 
     if lck is None:
         print("autotest is locked - exiting.  lckfile=(%s)" % (lckfile,))
-        sys.exit(0)
+        sys.exit(1)
 
     atexit.register(util.pexpect_close_all)
 
