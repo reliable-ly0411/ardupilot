@@ -2589,6 +2589,12 @@ class TestSuite(abc.ABC):
         tstart = time.time()
         if required_bootcount is None:
             required_bootcount = old_bootcount + 1
+
+        # note that this loop depends on the reconnection announcing us
+        # to the vehicle as it happens - see
+        # announce_ourselves_on_every_connection().  Without that, the
+        # vehicle boots, says everything it has to say and discards all
+        # of it before it has heard from us.
         while True:
             if time.time() - tstart > timeout:
                 raise AutoTestTimeoutException("Did not detect reboot")
@@ -9787,6 +9793,50 @@ Also, ignores heartbeats not from our target system'''
         '''
         return 'reconnect_delay' in signature(mavutil.mavlink_connection).parameters
 
+    def announce_ourselves_to_ardupilot(self):
+        '''send a heartbeat, so that the vehicle knows this channel has a GCS
+        on the end of it'''
+        self.mav.mav.heartbeat_send(mavutil.mavlink.MAV_TYPE_GCS,
+                                    mavutil.mavlink.MAV_AUTOPILOT_INVALID,
+                                    0,
+                                    0,
+                                    0)
+
+    def announce_ourselves_on_every_connection(self):
+        '''arrange that every connection we make to the vehicle transmits
+        before anything else happens on it.
+
+        The vehicle only sends statustexts to channels in
+        active_channel_mask()|streaming_channel_mask(), and a channel
+        only becomes active once the vehicle has received something on
+        it.  Until we speak, everything it says is discarded outright
+        rather than queued - it reaches the onboard log and nowhere
+        else.
+
+        That matters most across a reboot: SITL waits for us in accept()
+        with its clock stopped, then covers seconds of simulated time in
+        the first milliseconds of wall clock, so an entire boot - and
+        the statustexts tests wait for - fits into the gap between the
+        link coming up and our first transmission.  pymavlink reconnects
+        from inside a recv(), which cannot transmit, so we announce
+        ourselves from inside the connect instead and leave no gap.
+        '''
+        original_do_connect = getattr(self.mav, "do_connect", None)
+        if not callable(original_do_connect):
+            # not a connection which reconnects (we use TCP, which is)
+            return
+        mav = self.mav
+
+        def do_connect_and_announce_ourselves():
+            original_do_connect()
+            # do_connect() does not do this, and mavfile.select() waits
+            # on it - leaving it stale means we never see anything
+            # arrive again:
+            mav.fd = mav.port.fileno()
+            self.announce_ourselves_to_ardupilot()
+
+        mav.do_connect = do_connect_and_announce_ourselves
+
     def get_mavlink_connection_going(self):
         # get a mavlink connection going
         try:
@@ -9795,7 +9845,9 @@ Also, ignores heartbeats not from our target system'''
             # reboot, so retry rapidly rather than at pymavlink's
             # default of once a second.  retries is a count of
             # attempts, so scale it to keep the same overall budget.
-            # The fallback here is for older pymavlinks.
+            # This is only safe because every connection announces us to
+            # the vehicle as it is made - see
+            # announce_ourselves_on_every_connection().
             extra_connection_args = {}
             reconnect_delay = 1
             if self.mavlink_connection_supports_reconnect_delay():
@@ -9820,6 +9872,10 @@ Also, ignores heartbeats not from our target system'''
             raise
         self.mav.message_hooks.append(self.message_hook)
         self.mav.mav.set_send_callback(self.send_message_hook, self)
+        self.announce_ourselves_on_every_connection()
+        # the connection above was made by mavlink_connection() itself,
+        # before that wrapper existed:
+        self.announce_ourselves_to_ardupilot()
         self.mav.idle_hooks.append(self.idle_hook)
 
         # we need to wait for a heartbeat here.  If we don't then
@@ -10291,8 +10347,24 @@ Also, ignores heartbeats not from our target system'''
         self.progress("Starting SITL", send_statustext=False)
         if binary is None:
             binary = self.binary
+        if self.sup_binaries:
+            # the vehicle must not advance its simulation past state
+            # the supplementary peripherals have yet to consume, or
+            # peripheral data streams stall in simulation time whenever
+            # a peripheral process is starved of wall-clock time
+            customisations = list(start_sitl_args.get("customisations") or [])
+            customisations.append("--sim-periph-lockstep")
+            start_sitl_args["customisations"] = customisations
         self.sitl = util.start_SITL(binary, **start_sitl_args)
         self.expect_list_add(self.sitl)
+        # stop the previous start's supplementary programs before we
+        # forget them.  Simply resetting the list left them running,
+        # reparented to init when their test finished - and a simulated
+        # peripheral which outlives its test carries on talking on the
+        # CAN bus, during precisely the tests which care about
+        # peripherals:
+        if getattr(self, "sup_prog", None):
+            self.stop_sup_program()
         self.sup_prog = []
         count = 0
         for sup_binary in self.sup_binaries:
@@ -10317,11 +10389,16 @@ Also, ignores heartbeats not from our target system'''
     def stop_sup_program(self, instance=None):
         self.progress("Stopping supplementary program")
         if instance is None:
-            # close all sup programs
-            for prog in self.sup_prog:
+            # close all sup programs.  Iterate over a copy: removing
+            # from the list being walked skips every other entry, so
+            # this closed only half of them - with the usual two
+            # peripherals, exactly one, and the other was left running.
+            for prog in list(self.sup_prog):
+                if prog is None:
+                    continue
                 self.expect_list_remove(prog)
-                self.sup_prog.remove(prog)
                 util.pexpect_close(prog)
+            self.sup_prog = []
         else:
             # close only the instance passed
             prog = self.sup_prog[instance]
@@ -12829,12 +12906,14 @@ Also, ignores heartbeats not from our target system'''
         self.context_pop()
         self.reboot_sitl()
 
-    def install_terrain_handlers_context(self):
+    def install_terrain_handlers_context(self, unserveable_requests_fatal=True):
         '''install a message handler into the current context which will
-        listen for an fulfill terrain requests from ArduPilot.  Will
-        die if the data is not available - but
-        self.terrain_in_offline_mode can be set to true in the
-        constructor to change this behaviour
+        listen for and fulfill terrain requests from ArduPilot.  A
+        request for a tile the handler cannot serve fails the test:
+        the tile should be added to Tools/autotest/tilecache/srtm.
+        Pass unserveable_requests_fatal=False to leave such requests
+        unanswered instead - a real terrain server simply does not
+        answer for data it does not have, and the vehicle copes.
         this should be called at the very top of your test context!
         '''
 
@@ -12873,9 +12952,27 @@ Also, ignores heartbeats not from our target system'''
                                       (lat2, lon2))
                         time.sleep(1)
                     if alt is None:
-                        # no data - we can't send the packet
-                        raise ValueError("No elevation data for (%f %f)" % (lat2, lon2))
+                        # no data - we can't send the packet.  Do not make
+                        # that fatal: the vehicle asks about anywhere its
+                        # mission goes, and a mission left behind by an
+                        # earlier test asks about somewhere this test has
+                        # no business having data for -
+                        #     No elevation data for (-26.590366 151.845361)
+                        # which is Kingaroy, from a mission loaded a
+                        # couple of tests earlier.  A real terrain server
+                        # simply does not answer, and the vehicle copes.
+                        self.progress("No elevation data for (%f %f); not "
+                                      "answering this request" % (lat2, lon2))
+                        data = None
+                        break
                     data.append(int(alt))
+                if data is None:
+                    if unserveable_requests_fatal:
+                        raise NotAchievedException(
+                            "Terrain handler asked for a tile it cannot "
+                            "serve (%f %f); add the tile to "
+                            "Tools/autotest/tilecache/srtm" % (lat2, lon2))
+                    continue
                 self.terrain_data_messages_sent += 1
                 self.mav.mav.terrain_data_send(m.lat,
                                                m.lon,
@@ -13955,6 +14052,11 @@ switch value'''
         self.run_tests_called = True
 
         result_list = []
+
+        # a timeout raised before any test has started - during init,
+        # for example - is attributed to this placeholder, rather than
+        # dying with an UnboundLocalError in the handler below:
+        test = Test(self.run_tests)
 
         try:
             self.init()
@@ -16372,7 +16474,6 @@ switch value'''
         try:
             mavproxy.send("module load ftp\n")
             mavproxy.expect(["Loaded module ftp", "module ftp already loaded"])
-            mavproxy.send("ftp set debug 1\n")  # so we get the "Terminated session" message
             mavproxy.send("ftp get %s %s\n" % (path, tmpfile.name))
             mavproxy.expect("Getting")
             tstart = self.get_sim_time()
@@ -16387,9 +16488,6 @@ switch value'''
                     break
                 except Exception:  # noqa: BLE001
                     continue
-            # terminate the connection, or it may still be in progress the next time an FTP is attempted:
-            mavproxy.send("ftp cancel\n")
-            mavproxy.expect("Terminated session")
         except Exception as e:  # noqa: BLE001
             self.print_exception_caught(e)
             ex = e

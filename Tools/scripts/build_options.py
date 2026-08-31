@@ -213,6 +213,7 @@ BUILD_OPTIONS = [
 
     Feature('Copter', 'AC_PAYLOAD_PLACE_ENABLED', 'AC_PAYLOAD_PLACE_ENABLED', 'Enable Copter Payload Place', 0, 'MISSION_NAV_PAYLOAD_PLACE'),  # noqa
 
+    Feature('Compass', 'AF9838', 'AP_COMPASS_AF9838_ENABLED', 'Enable AF9838 compasses', 1, None),
     Feature('Compass', 'AK09916', 'AP_COMPASS_AK09916_ENABLED', 'Enable AK0991x compasses', 1, None),
     Feature('Compass', 'AK8963', 'AP_COMPASS_AK8963_ENABLED', 'Enable AK8963 compasses', 1, None),
     Feature('Compass', 'BMM150', 'AP_COMPASS_BMM150_ENABLED', 'Enable BMM150 compasses', 1, None),
@@ -420,6 +421,7 @@ BUILD_OPTIONS = [
     Feature('Other', 'GyroFFT', 'HAL_GYROFFT_ENABLED', 'Enable In-Flight gyro FFT calculations', 0, None),
     Feature('Other', 'NMEA_OUTPUT', 'HAL_NMEA_OUTPUT_ENABLED', 'Enable NMEA output', 0, None),
     Feature('Other', 'SDCARD_FORMATTING', 'AP_FILESYSTEM_FORMAT_ENABLED', 'Enable Formatting of microSD cards', 0, None),
+    Feature('Other', 'MASS_STORAGE', 'AP_REBOOT_MASS_STORAGE_ENABLED', 'Enable reboot to USB mass storage', 0, None),
     Feature('Other', 'BOOTLOADER_FLASHING', 'AP_BOOTLOADER_FLASHING_ENABLED', 'Enable Bootloader flashing', 0, "FILESYSTEM_ROMFS"),  # noqa
     Feature('Other', 'SERIALDEVICE_REGISTER', 'AP_SERIALMANAGER_REGISTER_ENABLED', 'Enable Serial device registration', 0, None), # noqa
 
@@ -461,7 +463,8 @@ BUILD_OPTIONS = [
     Feature('MAVLink', 'MAVLINK_GET_HOME_POSITION', 'AP_MAVLINK_MAV_CMD_GET_HOME_POSITION_ENABLED', 'Enable superseded MAV_CMD_GET_HOME_POSITION', 0, None),  # noqa
 
     Feature('Developer', 'KILL_IMU', 'AP_INERTIALSENSOR_KILL_IMU_ENABLED', 'Allow IMUs to be disabled at runtime', 0, None),
-    Feature('Developer', 'CRASHCATCHER', 'AP_CRASHDUMP_ENABLED', 'Enable CrashCatcher', 0, None),
+    Feature('Developer', 'CRASHDUMP_FLASH', 'AP_CRASHDUMP_FLASH_ENABLED', 'Enable crash dumps to flash', 0, None),
+    Feature('Developer', 'CRASHDUMP_FATFS', 'AP_CRASHDUMP_FATFS_ENABLED', 'Enable crash dumps to microSD', 0, None),
     Feature('Developer', 'FAILURE_INJECTION', 'AP_MAVLINK_FAILURE_CREATION_ENABLED', 'Enable autopilot failure injection via MAVLink ', 0, None),  # noqa:E501
 
     Feature('GPS Drivers', 'UBLOX', 'AP_GPS_UBLOX_ENABLED', 'Enable U-blox GPS', 1, None),

@@ -24,6 +24,7 @@ parser.add_option("-C", "--compass", action='store_true', help='decode compass I
 parser.add_option("-I", "--imu", action='store_true', help='decode IMU IDs')
 parser.add_option("-B", "--baro", action='store_true', help='decode barometer IDs')
 parser.add_option("-A", "--airspeed", action='store_true', help='decode airspeed IDs')
+parser.add_option("-M", "--mavlink", action='store_true', help='decode MAVLink channel IDs')
 
 opts, args = parser.parse_args()
 
@@ -73,6 +74,7 @@ compass_types = {
     0x17 : "DEVTYPE_BMM350",
     0x18 : "DEVTYPE_IIS2MDC",
     0x19 : "DEVTYPE_LIS2MDL",  # unused except on pre-release firmware
+    0x1A : "DEVTYPE_AF9838",
 }
 
 imu_types = {
@@ -160,6 +162,13 @@ airspeed_types = {
     0x0C : "DEVTYPE_AIRSPEED_SCRIPTING",
 }
 
+mavlink_types = {
+    0x01 : "DEVTYPE_MAVLINK_UART",
+    0x02 : "DEVTYPE_MAVLINK_NETWORKING",
+    0x03 : "DEVTYPE_MAVLINK_CAN",
+    0x04 : "DEVTYPE_MAVLINK_SCRIPTING",
+}
+
 decoded_devname = ""
 
 if opts.compass:
@@ -173,7 +182,10 @@ if opts.baro:
 
 if opts.airspeed:
     decoded_devname = airspeed_types.get(devtype, "UNKNOWN")
-    
+
+if opts.mavlink:
+    decoded_devname = mavlink_types.get(devtype, "UNKNOWN")
+
 if bus_type == 3:
     #dronecan devtype represents sensor_id
     print("bus_type:%s(%u)  bus:%u address:%u(0x%x) sensor_id:%u(0x%x) %s" % (
