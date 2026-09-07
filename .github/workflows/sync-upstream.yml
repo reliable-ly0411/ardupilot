@@ -40,6 +40,19 @@ jobs:
               printf '%s\n' "$non_workflow_conflicts"
               exit 1
             fi
+
+            # fork 的工作流由本仓库维护；按 fork 当前状态解决工作流冲突。
+            while IFS= read -r path; do
+              [ -n "$path" ] || continue
+              if git cat-file -e "HEAD:$path" 2>/dev/null; then
+                git checkout --ours -- "$path"
+                git add -- "$path"
+              else
+                git rm -- "$path"
+              fi
+            done <<EOF
+$conflicts
+EOF
           fi
 
           git restore --source=HEAD --staged --worktree -- .github/workflows
