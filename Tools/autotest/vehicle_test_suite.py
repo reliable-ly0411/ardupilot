@@ -228,6 +228,11 @@ class Location(object):
     misinterpreting the altitude.
     '''
 
+    # __slots__ so that an assignment to a mistyped or frameless
+    # attribute - loc.alt = 5 in particular - raises rather than
+    # silently creating an attribute nothing then reads
+    __slots__ = ('lat', 'lng', '_alt_m', '_alt_frame')
+
     def __init__(self, lat_deg: float, lng_deg: float, alt_m: float, alt_frame: AltFrame):
         if not isinstance(alt_frame, AltFrame):
             raise ValueError("alt_frame must be an AltFrame, got %s" % str(alt_frame))
@@ -244,12 +249,6 @@ class Location(object):
         ret._alt_m = None
         ret._alt_frame = None
         return ret
-
-    @classmethod
-    def from_mavutil(cls, loc) -> Location:
-        '''create from a mavutil.location, whose alt is AMSL by
-        convention; the caller must ensure that is true of this one'''
-        return cls(loc.lat, loc.lng, loc.alt, AltFrame.ABSOLUTE)
 
     @property
     def alt_frame(self) -> AltFrame:
@@ -331,6 +330,9 @@ class Location(object):
 
 
 NUM_RC_CHANNELS = 16
+
+# values from LogEvent in libraries/AP_Logger/AP_Logger.h:
+EKF_MAG_OFFSETS_SAVED = 167
 
 
 class Context(object):
@@ -711,9 +713,9 @@ class WaitAndMaintain(object):
 
 
 class WaitAndMaintainLocation(WaitAndMaintain):
-    def __init__(self, test_suite, target, accuracy=5, height_accuracy=1, location_source=None, **kwargs):
+    def __init__(self, test_suite, target: Location, accuracy=5, height_accuracy=1, location_source=None, **kwargs):
         super(WaitAndMaintainLocation, self).__init__(test_suite, **kwargs)
-        if isinstance(target, Location) and height_accuracy is not None:
+        if height_accuracy is not None:
             if not target.has_alt():
                 raise ValueError("lat/lng-only target Location requires height_accuracy=None")
             # comparisons are made against AMSL current position, so
@@ -726,10 +728,7 @@ class WaitAndMaintainLocation(WaitAndMaintain):
 
     def target_alt_amsl_m(self):
         '''target altitude in metres AMSL'''
-        if isinstance(self.target, Location):
-            return self.target.get_alt_m(AltFrame.ABSOLUTE)
-        # mavutil.location alt is AMSL-by-convention:
-        return self.target.alt
+        return self.target.get_alt_m(AltFrame.ABSOLUTE)
 
     def announce_start_text(self):
         t = self.target
@@ -743,15 +742,13 @@ class WaitAndMaintainLocation(WaitAndMaintain):
         return self.loc
 
     def get_current_value(self):
-        if self.location_source is None:
-            return self.test_suite.mav.location()
-        return self.test_suite.get_mav_location(self.location_source)
+        return self.test_suite.get_location(self.location_source)
 
     def horizontal_error(self, value):
         return self.test_suite.get_distance(value, self.target)
 
     def vertical_error(self, value):
-        return math.fabs(value.alt - self.target_alt_amsl_m())
+        return math.fabs(value.get_alt_m(AltFrame.ABSOLUTE) - self.target_alt_amsl_m())
 
     def validate_value(self, value):
         if self.horizontal_error(value) > self.accuracy:
@@ -773,7 +770,7 @@ class WaitAndMaintainLocation(WaitAndMaintain):
 
     def progress_text(self, current_value):
         if self.height_accuracy is not None:
-            return (f"Want=({self.target.lat:.7f},{self.target.lng:.7f},{self.target_alt_amsl_m():.2f}) Got=({current_value.lat:.7f},{current_value.lng:.7f},{current_value.alt:.2f}) dist={self.horizontal_error(current_value):.2f} vdist={self.vertical_error(current_value):.2f}")  # noqa
+            return (f"Want=({self.target.lat:.7f},{self.target.lng:.7f},{self.target_alt_amsl_m():.2f}) Got=({current_value.lat:.7f},{current_value.lng:.7f},{current_value.get_alt_m(AltFrame.ABSOLUTE):.2f}) dist={self.horizontal_error(current_value):.2f} vdist={self.vertical_error(current_value):.2f}")  # noqa
 
         return (f"Want=({self.target.lat},{self.target.lng}) distance={self.horizontal_error(current_value)}")
 
@@ -1113,10 +1110,6 @@ class MSP_DJI(MSP_Generic):
 
         def lon(self):
             return self.int32(6) / 1e7
-
-        def LocationInt(self):
-            # other fields are available, I'm just lazy
-            return LocationInt(self.int32(2), self.int32(6), 0, 0)
 
     def command_callback(self, frametype, data):
         # print("X: %s %s" % (str(frametype), str(data)))
@@ -2139,6 +2132,7 @@ class TestSuite(abc.ABC):
                  move_logs_on_test_failure: bool = False,
                  asan=False,
                  check_parameter_leaks=True,
+                 unix_domain_socket=False,
                  ):
         if breakpoints is None:
             breakpoints = []
@@ -2219,6 +2213,8 @@ class TestSuite(abc.ABC):
         self.in_drain_mav = False
         self.tlog = None
         self.enable_fgview = enable_fgview
+        self.unix_domain_socket = unix_domain_socket
+        self.unix_domain_socket_dir = os.getcwd()
 
         self.rc_thread: threading.Thread | None = None
         self.rc_thread_should_quit: bool = False
@@ -2276,12 +2272,18 @@ class TestSuite(abc.ABC):
     def buildlogs_dirpath():
         return os.getenv("BUILDLOGS", util.reltopdir("../buildlogs"))
 
+    def sitl_start_heading(self) -> float:
+        '''heading, in degrees, the simulation should start the vehicle
+        at.  Location carries no heading, so the start pose's heading
+        lives here rather than beside sitl_start_location()'''
+        return 0
+
     def sitl_home(self):
         HOME = self.sitl_start_location()
         return "%f,%f,%u,%u" % (HOME.lat,
                                 HOME.lng,
-                                HOME.alt,
-                                HOME.heading)
+                                HOME.get_alt_m(AltFrame.ABSOLUTE),
+                                self.sitl_start_heading())
 
     def mavproxy_version(self):
         '''return the current version of mavproxy as a tuple e.g. (1,8,8)'''
@@ -2329,12 +2331,40 @@ class TestSuite(abc.ABC):
         return 8000 + offset
 
     def autotest_connection_string_to_ardupilot(self):
-        return "tcp:127.0.0.1:%u" % self.adjust_ardupilot_port(5760)
+        return self.sitl_serial_endpoint(0)
+
+    def sitl_serial_endpoint(self, serial):
+        tcp_ports = {
+            0: 5760,
+            1: 5762,
+            2: 5763,
+            5: 5765,
+            6: 5766,
+            7: 5767,
+            8: 5768,
+        }
+        if serial not in tcp_ports:
+            raise ValueError("SERIAL%u does not have a default MAVLink endpoint" % serial)
+        if self.unix_domain_socket:
+            return "uds:" + util.unix_domain_socket_path(serial, self.unix_domain_socket_dir)
+        return "tcp:127.0.0.1:%u" % self.adjust_ardupilot_port(tcp_ports[serial])
 
     def sitl_rcin_port(self, offset=0):
         if offset > 2:
             raise ValueError("offset too large")
         return 5501 + offset
+
+    def sitl_rcin_endpoint(self, offset=0):
+        if self.unix_domain_socket:
+            path = util.unix_domain_socket_rcin_path(self.unix_domain_socket_dir, offset)
+            return "uds:" + path
+        return "127.0.0.1:%u" % self.sitl_rcin_port(offset)
+
+    def sitl_rcin_commandline_value(self, offset=0):
+        if self.unix_domain_socket:
+            path = util.unix_domain_socket_rcin_path(self.unix_domain_socket_dir, offset)
+            return "uds:" + path
+        return str(self.sitl_rcin_port(offset))
 
     def mavproxy_options(self):
         """Returns options to be passed to MAVProxy."""
@@ -2428,7 +2458,7 @@ class TestSuite(abc.ABC):
             m = re.match(r"([-\d.]+)\s+([-\d.]+)\s*", line.decode('ascii'))
             if m is None:
                 raise ValueError("Did not match (%s)" % line)
-            locs.append(mavutil.location(float(m.group(1)), float(m.group(2)), 0, 0))
+            locs.append(Location.latlon_only(float(m.group(1)), float(m.group(2))))
         self.upload_fences_from_locations([
             (mavutil.mavlink.MAV_CMD_NAV_FENCE_POLYGON_VERTEX_INCLUSION, locs),
         ])
@@ -2720,7 +2750,7 @@ class TestSuite(abc.ABC):
             int(new.lat * 1e7),
             int(new.lng * 1e7),
             mavutil.mavlink.ADSB_ALTITUDE_TYPE_PRESSURE_QNH,
-            int(here.alt*1000 + 10000), # 10m up
+            int(here.get_alt_m(AltFrame.ABSOLUTE)*1000 + 10000), # 10m up
             0, # heading in cdeg
             0, # horizontal velocity cm/s
             0, # vertical velocity cm/s
@@ -3896,8 +3926,8 @@ class TestSuite(abc.ABC):
         self.wait_sensor_state(mavutil.mavlink.MAV_SYS_STATUS_SENSOR_GPS, True, True, True, timeout=10)
         m = self.poll_message("HIGH_LATENCY2")
         self.progress(self.dump_message_verbose(m))
-        loc = mavutil.location(m.latitude, m.longitude, m.altitude, 0)
-        dist = self.get_distance_int(loc, self.sim_location_int())
+        loc = Location.latlon_only(m.latitude * 1e-7, m.longitude * 1e-7)
+        dist = self.get_distance(loc, self.get_location('SIMSTATE'))
 
         if dist > 1:
             raise NotAchievedException("Bad location from HIGH_LATENCY2")
@@ -3979,7 +4009,7 @@ class TestSuite(abc.ABC):
             self.reboot_sitl()
 
             mav2 = mavutil.mavlink_connection(
-                "tcp:localhost:%u" % self.adjust_ardupilot_port(5763),
+                self.sitl_serial_endpoint(2),
                 robust_parsing=True,
                 source_system=7,
                 source_component=7,
@@ -4463,23 +4493,6 @@ class TestSuite(abc.ABC):
                 raise AutoTestTimeoutException("sim_time_cached is not updating!")
         return ret
 
-    def sim_location(self):
-        """Return current simulator location.  Deprecated; use
-        get_location('SIMSTATE') instead."""
-        m = self.assert_receive_message('SIMSTATE')
-        return mavutil.location(m.lat*1.0e-7,
-                                m.lng*1.0e-7,
-                                0,
-                                math.degrees(m.yaw))
-
-    def sim_location_int(self):
-        """Return current simulator location."""
-        m = self.assert_receive_message('SIMSTATE')
-        return mavutil.location(m.lat,
-                                m.lng,
-                                0,
-                                math.degrees(m.yaw))
-
     def save_wp(self, ch=7):
         """Trigger RC Aux to save waypoint."""
         self.set_rc(ch, 1000)
@@ -4498,7 +4511,7 @@ class TestSuite(abc.ABC):
 
     def create_simple_relhome_mission(self, items_in, target_system=1, target_component=1):
         return self.create_simple_relloc_mission(
-            self.home_position_as_mav_location(),
+            self.home_position_as_location(),
             items_in,
             target_system=target_system,
             target_component=target_component,
@@ -5548,11 +5561,9 @@ class TestSuite(abc.ABC):
         tstart = time.time()  # timeout in wallclock
         while True:
             m = mav.recv_match(type=type, blocking=True, timeout=0.05, condition=condition)
-            if instance is not None:
-                if getattr(m, m._instance_field) != instance:
-                    continue
             if m is not None:
-                break
+                if instance is None or getattr(m, m._instance_field) == instance:
+                    break
             elapsed_time = time.time() - tstart
             if elapsed_time > timeout:
                 raise NotAchievedException("Did not get %s after %s seconds" %
@@ -5742,7 +5753,7 @@ class TestSuite(abc.ABC):
 
     def get_home_location_from_mission(self, filename):
         (home_lat, home_lon, home_alt, heading) = self.get_home_tuple_from_mission("rover-path-planning-mission.txt")
-        return mavutil.location(home_lat, home_lon)
+        return Location.latlon_only(home_lat, home_lon)
 
     def get_home_tuple_from_mission_filepath(self, filepath):
         '''gets item 0 from the mission file, returns a tuple suitable for
@@ -6084,7 +6095,7 @@ class TestSuite(abc.ABC):
 
     def rc_thread_main(self):
         """When this function completes, the thread terminates."""
-        sitl_output = mavutil.mavudp("127.0.0.1:%u" % self.sitl_rcin_port(), input=False)
+        sitl_output = util.sitl_rcin_connection(self.sitl_rcin_endpoint())
 
         # Pay attention, there are race conditions /
         # wallclock-vs-simtime issues to worry about here.
@@ -6141,17 +6152,6 @@ class TestSuite(abc.ABC):
         location.lat = lat
         location.lng = lng
         print("new: %f %f" % (location.lat, location.lng))
-
-    def home_relative_loc_ne(self, n, e):
-        ret = self.home_position_as_mav_location()
-        self.location_offset_ne(ret, n, e)
-        return ret
-
-    def home_relative_loc_neu(self, n, e, u):
-        ret = self.home_position_as_mav_location()
-        self.location_offset_ne(ret, n, e)
-        ret.alt += u
-        return ret
 
     def zero_throttle(self):
         """Set throttle to zero."""
@@ -7656,7 +7656,7 @@ class TestSuite(abc.ABC):
 
     def location_from_utm_global_position_next_wp(self, m):
         """Return the next waypoint in a UTM_GLOBAL_POSITION message as a Location."""
-        return mavutil.location(m.next_lat * 1e-7, m.next_lon * 1e-7, 0, 0)
+        return Location.latlon_only(m.next_lat * 1e-7, m.next_lon * 1e-7)
 
     @staticmethod
     def get_distance_accurate(loc1, loc2):
@@ -7722,12 +7722,12 @@ class TestSuite(abc.ABC):
         loc2_lon = TestSuite.get_lon_attr(loc2)
 
         return TestSuite.get_distance_accurate(
-            mavutil.location(loc1_lat*1e-7, loc1_lon*1e-7),
-            mavutil.location(loc2_lat*1e-7, loc2_lon*1e-7))
+            Location.latlon_only(loc1_lat*1e-7, loc1_lon*1e-7),
+            Location.latlon_only(loc2_lat*1e-7, loc2_lon*1e-7))
 
     def bearing_to(self, loc):
         '''return bearing from here to location'''
-        here = self.mav.location()
+        here = self.get_location()
         return self.get_bearing(here, loc)
 
     @staticmethod
@@ -7948,7 +7948,7 @@ class TestSuite(abc.ABC):
             self.set_rc(1, 1500)
 
     def assert_vehicle_location_is_at_startup_location(self, dist_max=1):
-        here = self.mav.location()
+        here = self.get_location()
         start_loc = self.sitl_start_location()
         dist = self.get_distance(here, start_loc)
         data = "dist=%f max=%f (here: %s start-loc: %s)" % (dist, dist_max, here, start_loc)
@@ -7966,7 +7966,7 @@ class TestSuite(abc.ABC):
         return None
 
     def assert_simstate_location_is_at_startup_location(self, dist_max=1):
-        simstate_loc = self.sim_location()
+        simstate_loc = self.get_location('SIMSTATE')
         start_loc = self.sitl_start_location()
         dist = self.get_distance(simstate_loc, start_loc)
         data = "dist=%f max=%f (simstate: %s start-loc: %s)" % (dist, dist_max, simstate_loc, start_loc)
@@ -8057,7 +8057,7 @@ class TestSuite(abc.ABC):
             tnow = self.get_sim_time(drain_mav=False)
 
     def send_terrain_check_message(self):
-        here = self.mav.location()
+        here = self.get_location()
         self.mav.mav.terrain_check_send(int(here.lat * 1e7), int(here.lng * 1e7))
 
     def get_terrain_height(self, verbose=False):
@@ -8682,27 +8682,6 @@ class TestSuite(abc.ABC):
             **kwargs
         )
 
-    def get_mav_location(self, location_source: str = None):
-        '''return a mavutil.location object for the given source;
-        source must produce a good lat/lng or exception will be
-        raised.  Deprecated; use get_location() instead'''
-        if location_source is None:
-            location_source = 'GLOBAL_POSITION_INT'
-        m = self.assert_receive_message(location_source)
-        m_type = m.get_type()
-        if m_type == "GLOBAL_POSITION_INT":
-            lat = m.lat * 1e-7
-            lon = m.lon * 1e-7
-            alt_m = m.alt * 0.001
-        elif m_type == "SIMSTATE":
-            lat = m.lat * 1e-7
-            lon = m.lng * 1e-7
-            alt_m = 0  # not available in SIMSTATE
-        if lat == 0 and lon == 0:
-            raise ValueError(f"Bad lat/lng {lat=} {lon=}")
-
-        return mavutil.location(lat, lon, alt_m, 0)
-
     def get_location(self,
                      location_source: str = None,
                      frame: AltFrame = AltFrame.ABSOLUTE,
@@ -8710,12 +8689,12 @@ class TestSuite(abc.ABC):
                      ) -> Location:
         '''return the current vehicle location as a (frame-aware)
         Location, with the altitude taken in the requested frame.  Use
-        this in preference to the mavutil.location producers
-        (mav.location(), get_mav_location()).  Note that lat/lng and
-        (for ABSOLUTE and ABOVE_HOME) altitude come from a single
-        GLOBAL_POSITION_INT, unlike mav.location() which mixes
-        GPS_RAW_INT and VFR_HUD.  location_source of SIMSTATE returns a
-        lat/lng-only Location as SIMSTATE carries no altitude'''
+        this in preference to pymavlink's mavfile.location().  Note
+        that lat/lng and (for ABSOLUTE and ABOVE_HOME) altitude come
+        from a single GLOBAL_POSITION_INT, unlike mavfile.location()
+        which mixes GPS_RAW_INT and VFR_HUD.  location_source of
+        SIMSTATE returns a lat/lng-only Location as SIMSTATE carries no
+        altitude'''
         # drain the link so the message we then block for reflects the
         # current position rather than being one which has sat in the
         # receive queue:
@@ -8755,10 +8734,10 @@ class TestSuite(abc.ABC):
 
     def wait_distance(self, distance, accuracy=2, timeout=30, location_source=None, **kwargs):
         """Wait for flight of a given distance."""
-        start = self.get_mav_location(location_source)
+        start = self.get_location(location_source)
 
         def get_distance():
-            return self.get_distance(start, self.get_mav_location(location_source))
+            return self.get_distance(start, self.get_location(location_source))
 
         def validator(value2, target2):
             return math.fabs(value2 - target2) <= accuracy
@@ -8778,7 +8757,7 @@ class TestSuite(abc.ABC):
         wps = self.download_using_mission_protocol(mavutil.mavlink.MAV_MISSION_TYPE_MISSION)
         m = wps[wp_num]
         self.progress("m: %s" % str(m))
-        loc = mavutil.location(m.x / 1.0e7, m.y / 1.0e7, 0, 0)
+        loc = Location.latlon_only(m.x / 1.0e7, m.y / 1.0e7)
         self.progress("loc: %s" % str(loc))
         self.wait_distance_to_location(loc, distance_min, distance_max, **kwargs)
 
@@ -8787,7 +8766,7 @@ class TestSuite(abc.ABC):
         assert distance_min <= distance_max, "Distance min should be less than distance max."
 
         def get_distance():
-            return self.get_distance(location, self.mav.location())
+            return self.get_distance(location, self.get_location())
 
         def validator(value2, target2=None):
             return distance_min <= value2 <= distance_max
@@ -9130,20 +9109,10 @@ class TestSuite(abc.ABC):
             self.delay_sim_time(0.2, "let RC inputs settle")
             self.context_pop()
 
-    def send_do_reposition(self, loc, frame=None):
-        '''send a DO_REPOSITION command for a location.  loc is ideally
-        a (frame-aware) Location, in which case the MAV_FRAME comes
-        from the Location itself and frame must be left None.  Passing
-        a mavutil.location and a frame is deprecated, as the object's
-        altitude frame can silently contradict the passed frame'''
-        if isinstance(loc, Location):
-            if frame is not None:
-                raise ValueError("frame comes from the Location; do not pass one")
-            frame, alt = self.mav_frame_and_alt_m(loc)
-        else:
-            if frame is None:
-                frame = mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT
-            alt = loc.alt
+    def send_do_reposition(self, loc: Location):
+        '''send a DO_REPOSITION command for a Location; the MAV_FRAME
+        comes from the Location's own altitude frame'''
+        frame, alt = self.mav_frame_and_alt_m(loc)
         self.run_cmd_int(
             mavutil.mavlink.MAV_CMD_DO_REPOSITION,
             0,
@@ -9850,7 +9819,9 @@ Also, ignores heartbeats not from our target system'''
             # announce_ourselves_on_every_connection().
             extra_connection_args = {}
             reconnect_delay = 1
-            if self.mavlink_connection_supports_reconnect_delay():
+            # The pinned pymavlink's UDS transport does not accept or use
+            # reconnect_delay, even though mavlink_connection() does.
+            if not self.unix_domain_socket and self.mavlink_connection_supports_reconnect_delay():
                 reconnect_delay = 0.05
                 extra_connection_args["reconnect_delay"] = reconnect_delay
             timeout = 20
@@ -10284,10 +10255,10 @@ Also, ignores heartbeats not from our target system'''
             pexpect_timeout *= 2
 
         if sitl_rcin_port is None:
-            sitl_rcin_port = self.sitl_rcin_port()
+            sitl_rcin_port = self.sitl_rcin_endpoint()
 
         if master is None:
-            master = 'tcp:127.0.0.1:%u' % self.adjust_ardupilot_port(5762)
+            master = self.sitl_serial_endpoint(1)
 
         if options is None:
             options = self.mavproxy_options()
@@ -10340,6 +10311,7 @@ Also, ignores heartbeats not from our target system'''
             "asan": self.asan,
             "wipe": True,
             "enable_fgview": self.enable_fgview,
+            "unix_domain_socket": self.unix_domain_socket,
         }
         start_sitl_args.update(**sitl_args)
         if "model" not in start_sitl_args or start_sitl_args["model"] is None:
@@ -10688,10 +10660,13 @@ Also, ignores heartbeats not from our target system'''
         self.progress("Polled home position (%s)" % str(m))
         return m
 
-    def position_target_loc(self):
+    def position_target_loc(self) -> Location:
         '''returns target location based on POSITION_TARGET_GLOBAL_INT'''
         m = self.mav.messages.get("POSITION_TARGET_GLOBAL_INT", None)
-        return mavutil.location(m.lat_int*1e-7, m.lon_int*1e-7, m.alt)
+        return Location(m.lat_int*1e-7,
+                        m.lon_int*1e-7,
+                        m.alt,
+                        Location.alt_frame_from_mav_frame(m.coordinate_frame))
 
     def current_waypoint(self):
         m = self.assert_receive_message('MISSION_CURRENT')
@@ -10710,11 +10685,6 @@ Also, ignores heartbeats not from our target system'''
             m = self.poll_home_position(quiet=True)
         here = self.assert_receive_message('GLOBAL_POSITION_INT')
         return self.get_distance_int(m, here)
-
-    def home_position_as_mav_location(self):
-        '''deprecated; use home_position_as_location() instead'''
-        m = self.poll_home_position()
-        return mavutil.location(m.latitude*1.0e-7, m.longitude*1.0e-7, m.altitude*1.0e-3, 0)
 
     def home_position_as_location(self) -> Location:
         '''return home position as a (frame-aware) Location; home
@@ -10762,69 +10732,44 @@ Also, ignores heartbeats not from our target system'''
             loc = self.change_alt_frame(loc, AltFrame.ABOVE_HOME)
         return loc.mav_frame(), loc.get_alt_m(loc.alt_frame)
 
-    def offset_location_ne(self, location, metres_north, metres_east):
-        '''return a new location offset from passed-in location;
-        preserves the type (and, for Location, the altitude frame) of
-        its input'''
+    def offset_location_ne(self, location: Location, metres_north, metres_east) -> Location:
+        '''return a new Location offset from passed-in Location,
+        preserving its altitude frame'''
         (target_lat, target_lng) = mavextra.gps_offset(location.lat,
                                                        location.lng,
                                                        metres_east,
                                                        metres_north)
-        if isinstance(location, Location):
-            ret = location.copy()
-            ret.lat = target_lat
-            ret.lng = target_lng
-            return ret
-        return mavutil.location(target_lat,
-                                target_lng,
-                                location.alt,
-                                location.heading)
+        ret = location.copy()
+        ret.lat = target_lat
+        ret.lng = target_lng
+        return ret
 
-    def offset_location_up(self, location, metres_up):
-        '''return a new location offset from passed-in location;
-        preserves the type (and, for Location, the altitude frame) of
-        its input'''
-        if isinstance(location, Location):
-            ret = location.copy()
-            ret.offset_up_m(metres_up)
-            return ret
-        return mavutil.location(
-            location.lat,
-            location.lng,
-            location.alt + metres_up,
-            location.heading
-        )
+    def offset_location_up(self, location: Location, metres_up) -> Location:
+        '''return a new Location offset from passed-in Location,
+        preserving its altitude frame'''
+        ret = location.copy()
+        ret.offset_up_m(metres_up)
+        return ret
 
-    def offset_location_heading_distance(self, location, bearing, distance):
-        '''return a new location offset from passed-in location;
-        preserves the type (and, for Location, the altitude frame) of
-        its input'''
+    def offset_location_heading_distance(self, location: Location, bearing, distance) -> Location:
+        '''return a new Location offset from passed-in Location,
+        preserving its altitude frame'''
         (target_lat, target_lng) = mavextra.gps_newpos(
             location.lat,
             location.lng,
             bearing,
             distance
         )
-        if isinstance(location, Location):
-            ret = location.copy()
-            ret.lat = target_lat
-            ret.lng = target_lng
-            return ret
-        return mavutil.location(
-            target_lat,
-            target_lng,
-            location.alt,
-            location.heading
-        )
+        ret = location.copy()
+        ret.lat = target_lat
+        ret.lng = target_lng
+        return ret
 
-    def set_home(self, loc):
+    def set_home(self, loc: Location):
         '''set home to supplied loc - adds implicit reboot at end of test.
         The command's altitude is AMSL; a Location in another frame is
         converted (against the *current* home/origin/terrain)'''
-        if isinstance(loc, Location):
-            alt = self.change_alt_frame(loc, AltFrame.ABSOLUTE).get_alt_m(AltFrame.ABSOLUTE)
-        else:
-            alt = loc.alt
+        alt = self.change_alt_frame(loc, AltFrame.ABSOLUTE).get_alt_m(AltFrame.ABSOLUTE)
         self.run_cmd_int(
             mavutil.mavlink.MAV_CMD_DO_SET_HOME,
             p5=int(loc.lat*1e7),
@@ -10866,9 +10811,10 @@ Also, ignores heartbeats not from our target system'''
             self.progress("### Rover skipping altitude check unti position fixes in")
         else:
             home_alt_m = orig_home.altitude * 1.0e-3
-            if abs(home_alt_m - start_loc.alt) > 2: # metres
+            start_alt_m = start_loc.get_alt_m(AltFrame.ABSOLUTE)
+            if abs(home_alt_m - start_alt_m) > 2: # metres
                 raise ValueError("homes differ in alt got=%fm want=%fm" %
-                                 (home_alt_m, start_loc.alt))
+                                 (home_alt_m, start_alt_m))
         new_x = orig_home.latitude + 1000
         new_y = orig_home.longitude + 2000
         new_z = orig_home.altitude + 300000 # 300 metres
@@ -13014,7 +12960,7 @@ Also, ignores heartbeats not from our target system'''
         if self.is_copter() or self.is_heli():
             self.user_takeoff(alt_min=50)
 
-        targetpos = self.mav.location()
+        targetpos = self.get_location()
         wp_accuracy = None
         if self.is_copter() or self.is_heli():
             wp_accuracy = self.get_parameter("WP_RADIUS_M", attempts=2)
@@ -13028,8 +12974,8 @@ Also, ignores heartbeats not from our target system'''
                              "MAV_FRAME_GLOBAL_RELATIVE_ALT_INT",
                              "MAV_FRAME_GLOBAL_TERRAIN_ALT",
                              "MAV_FRAME_GLOBAL_TERRAIN_ALT_INT"]:
-                home = self.home_position_as_mav_location()
-                return alt - home.alt
+                home = self.home_position_as_location()
+                return alt - home.get_alt_m(AltFrame.ABSOLUTE)
             else:
                 return alt
 
@@ -13056,8 +13002,11 @@ Also, ignores heartbeats not from our target system'''
                 0,  # yawrate
             )
 
-        def testpos(self, targetpos: mavutil.location, test_alt: bool, frame_name: str, frame):
-            send_target_position(targetpos.lat, targetpos.lng, to_alt_frame(targetpos.alt, frame_name), frame)
+        def testpos(self, targetpos: Location, test_alt: bool, frame_name: str, frame):
+            send_target_position(targetpos.lat,
+                                 targetpos.lng,
+                                 to_alt_frame(targetpos.get_alt_m(AltFrame.ABSOLUTE), frame_name),
+                                 frame)
             self.wait_location(
                 targetpos,
                 accuracy=wp_accuracy,
@@ -13072,25 +13021,25 @@ Also, ignores heartbeats not from our target system'''
             self.start_subtest("Changing Latitude")
             targetpos.lat += 0.0001
             if test_alt:
-                targetpos.alt += 5
+                targetpos.offset_up_m(5)
             testpos(self, targetpos, test_alt, frame_name, frame)
 
             self.start_subtest("Changing Longitude")
             targetpos.lng += 0.0001
             if test_alt:
-                targetpos.alt -= 5
+                targetpos.offset_up_m(-5)
             testpos(self, targetpos, test_alt, frame_name, frame)
 
             self.start_subtest("Revert Latitude")
             targetpos.lat -= 0.0001
             if test_alt:
-                targetpos.alt += 5
+                targetpos.offset_up_m(5)
             testpos(self, targetpos, test_alt, frame_name, frame)
 
             self.start_subtest("Revert Longitude")
             targetpos.lng -= 0.0001
             if test_alt:
-                targetpos.alt -= 5
+                targetpos.offset_up_m(-5)
             testpos(self, targetpos, test_alt, frame_name, frame)
 
             if test_heading:
@@ -13098,7 +13047,7 @@ Also, ignores heartbeats not from our target system'''
                 self.progress("Changing Latitude and Heading")
                 targetpos.lat += 0.0001
                 if test_alt:
-                    targetpos.alt += 5
+                    targetpos.offset_up_m(5)
                 self.mav.mav.set_position_target_global_int_send(
                     0,  # timestamp
                     self.sysid_thismav(),  # target system_id
@@ -13109,7 +13058,7 @@ Also, ignores heartbeats not from our target system'''
                     MAV_POS_TARGET_TYPE_MASK.YAW_RATE_IGNORE,
                     int(targetpos.lat * 1.0e7),  # lat
                     int(targetpos.lng * 1.0e7),  # lon
-                    to_alt_frame(targetpos.alt, frame_name),  # alt
+                    to_alt_frame(targetpos.get_alt_m(AltFrame.ABSOLUTE), frame_name),  # alt
                     0,  # vx
                     0,  # vy
                     0,  # vz
@@ -13131,7 +13080,7 @@ Also, ignores heartbeats not from our target system'''
                 self.start_subtest("Revert Latitude and Heading")
                 targetpos.lat -= 0.0001
                 if test_alt:
-                    targetpos.alt -= 5
+                    targetpos.offset_up_m(-5)
                 self.mav.mav.set_position_target_global_int_send(
                     0,  # timestamp
                     self.sysid_thismav(),  # target system_id
@@ -13142,7 +13091,7 @@ Also, ignores heartbeats not from our target system'''
                     MAV_POS_TARGET_TYPE_MASK.YAW_RATE_IGNORE,
                     int(targetpos.lat * 1.0e7),  # lat
                     int(targetpos.lng * 1.0e7),  # lon
-                    to_alt_frame(targetpos.alt, frame_name),  # alt
+                    to_alt_frame(targetpos.get_alt_m(AltFrame.ABSOLUTE), frame_name),  # alt
                     0,  # vx
                     0,  # vy
                     0,  # vz
@@ -13175,7 +13124,7 @@ Also, ignores heartbeats not from our target system'''
                         MAV_POS_TARGET_TYPE_MASK.YAW_IGNORE,
                         int(targetpos.lat * 1.0e7),  # lat
                         int(targetpos.lng * 1.0e7),  # lon
-                        to_alt_frame(targetpos.alt, frame_name),  # alt
+                        to_alt_frame(targetpos.get_alt_m(AltFrame.ABSOLUTE), frame_name),  # alt
                         0,  # vx
                         0,  # vy
                         0,  # vz
@@ -13190,7 +13139,7 @@ Also, ignores heartbeats not from our target system'''
                 target_rate = 1.0  # in rad/s
                 targetpos.lat += 0.0001
                 if test_alt:
-                    targetpos.alt += 5
+                    targetpos.offset_up_m(5)
                 self.wait_yaw_speed(target_rate, timeout=timeout,
                                     called_function=lambda plop, empty: send_yaw_rate(
                                         target_rate, None), minimum_duration=5)
@@ -13205,7 +13154,7 @@ Also, ignores heartbeats not from our target system'''
                 target_rate = -1.0
                 targetpos.lat -= 0.0001
                 if test_alt:
-                    targetpos.alt -= 5
+                    targetpos.offset_up_m(-5)
                 self.wait_yaw_speed(target_rate, timeout=timeout,
                                     called_function=lambda plop, empty: send_yaw_rate(
                                         target_rate, None), minimum_duration=5)
@@ -13739,17 +13688,12 @@ Also, ignores heartbeats not from our target system'''
 
         self.check_fence_upload_download(items)
 
-    def rally_MISSION_ITEM_INT_from_loc(self, loc):
-        '''create a rally point MISSION_ITEM_INT from loc.  A
-        (frame-aware) Location's altitude frame is carried into the
-        item's frame, above-origin being converted to above-home as
-        missions have no origin-relative frame.  A mavutil.location's
-        alt is taken as AMSL'''
-        if isinstance(loc, Location):
-            frame, alt = self.mav_frame_and_alt_m(loc)
-        else:
-            frame = mavutil.mavlink.MAV_FRAME_GLOBAL
-            alt = loc.alt
+    def rally_MISSION_ITEM_INT_from_loc(self, loc: Location):
+        '''create a rally point MISSION_ITEM_INT from loc; the
+        Location's altitude frame is carried into the item's frame,
+        above-origin being converted to above-home as missions have no
+        origin-relative frame'''
+        frame, alt = self.mav_frame_and_alt_m(loc)
         return self.create_MISSION_ITEM_INT(
             mavutil.mavlink.MAV_CMD_NAV_RALLY_POINT,
             x=int(loc.lat*1e7),
@@ -14013,6 +13957,21 @@ switch value'''
 
     def dfreader_for_current_onboard_log(self):
         return self.dfreader_for_path(self.current_onboard_log_filepath())
+
+    def assert_EV_count(self, event_id, count):
+        '''assert the current onboard log holds count instances of EV.Id=event_id'''
+        dfreader = self.dfreader_for_current_onboard_log()
+        found = 0
+        while True:
+            m = dfreader.recv_match(type='EV')
+            if m is None:
+                break
+            if m.Id == event_id:
+                found += 1
+        if found != count:
+            raise NotAchievedException("Want %u EV.Id=%u, got %u" %
+                                       (count, event_id, found))
+        self.progress("Found %u EV.Id=%u as expected" % (found, event_id))
 
     def assert_log_has_no_dropped_blocks(self, path):
         '''check the DSF.Dp (dropped-block) counter in a dataflash log is
@@ -14380,6 +14339,8 @@ switch value'''
             })
             self.drain_mav()
             self.assert_capability(mavutil.mavlink.MAV_PROTOCOL_CAPABILITY_FLIGHT_TERMINATION)
+            # AFS_TERMINATE magically set-and-saved by code:
+            self.context_preserve_parameters(["AFS_TERMINATE"])
             self.set_parameter("AFS_TERM_ACTION", 42)
             self.load_sample_mission()
             self.context_collect("STATUSTEXT")
@@ -14456,6 +14417,8 @@ switch value'''
             "AFS_QNH_PRESSURE": 1000,
             "AFS_AMSL_ERR_GPS": 10,
         })
+        # AFS_TERMINATE magically set-and-saved by code:
+        self.context_preserve_parameters(["AFS_TERMINATE"])
         self.wait_ready_to_arm()
         self.start_subtest("Ensuring breaking baros doesn't terminate")
         self.set_parameters({
@@ -14678,7 +14641,10 @@ switch value'''
         HOME = self.sitl_start_location()
         for heading in 0, 90:
             self.customise_SITL_commandline([
-                "--home", "%s,%s,%s,%s" % (HOME.lat, HOME.lng, HOME.alt, heading)
+                "--home", "%s,%s,%s,%s" % (HOME.lat,
+                                           HOME.lng,
+                                           HOME.get_alt_m(AltFrame.ABSOLUTE),
+                                           heading)
             ])
 
             # Test all simulated ExternalAHRS backends
@@ -15164,7 +15130,15 @@ switch value'''
 
         received_frsky_texts = []
         last_len_received_statustexts = 0
-        timeout = 7 * self.speedup # it can take a *long* time to get these messages down!
+        # the queue has to drain before the text we are looking for
+        # reaches us, and how long that takes is best measured in
+        # simulated time: 58s at speedup 1, 49s at 5, 39s at 10 and 20,
+        # 10s at 100 - it falls as the speedup rises.  Scaling the budget
+        # by the speedup therefore had it backwards, handing out 700s
+        # where 10 was needed and 35s where 49 was, so this failed every
+        # time at --speedup=5.  Allow a fixed 150s, comfortably above the
+        # slowest measured and still an assertion at the default speedup.
+        timeout = 150
         while True:
             self.drain_mav()
             now = self.get_sim_time_cached()
@@ -15936,7 +15910,8 @@ switch value'''
                 f = msp.get_frame(msp.FRAME_GPS_RAW)
             except KeyError:
                 continue
-            dist = self.get_distance_int(f.LocationInt(), self.sim_location_int())
+            dist = self.get_distance(Location.latlon_only(f.lat(), f.lon()),
+                                     self.get_location('SIMSTATE'))
             print("lat=%f lon=%f dist=%f" % (f.lat(), f.lon(), dist))
             if dist < 1:
                 break
@@ -16375,8 +16350,8 @@ switch value'''
 
             # the secondary position should be close to the primary (POS):
             if pos is not None and m.Lat != 0 and m.Lng != 0:
-                secondary_loc = mavutil.location(m.Lat, m.Lng, 0, 0)
-                primary_loc = mavutil.location(pos.Lat, pos.Lng, 0, 0)
+                secondary_loc = Location.latlon_only(m.Lat, m.Lng)
+                primary_loc = Location.latlon_only(pos.Lat, pos.Lng)
                 dist = self.get_distance(primary_loc, secondary_loc)
                 if dist > 50:
                     raise NotAchievedException(
@@ -16921,6 +16896,118 @@ switch value'''
             time.sleep(0.1)
         raise NotAchievedException(
             "%s did not %s" % (path, "appear" if present else "go away"))
+
+    def MAVFTPListDirectoryFullPacket(self):
+        '''test an entry which exactly fills a listing packet is still sent'''
+
+        dirname = "ftp_full_packet_test"
+        content = b"x" * 10
+        # an entry is "F<name>\t<size>\0", and the payload of a listing reply
+        # holds 239 bytes
+        payload_len = 239
+        overhead = len("F") + len("\t") + len(str(len(content))) + len("\0")
+        names = {
+            "control": "control.txt",
+            # exactly fills the payload: sendable, and was being dropped
+            "exact": "exact_".ljust(payload_len - overhead, "x"),
+            # one byte too long for a packet of its own, so it can never be sent
+            "toolong": "toolong_".ljust(payload_len - overhead + 1, "x"),
+        }
+
+        if os.path.exists(dirname):
+            shutil.rmtree(dirname)
+        os.mkdir(dirname)
+        for name in names.values():
+            self.write_content_to_filepath(content, os.path.join(dirname, name))
+
+        try:
+            (entries, _) = self.ftp_list_dir(dirname)
+            (files, _) = self.ftp_listing_files_and_dirs(entries)
+
+            if names["exact"] not in files:
+                raise NotAchievedException(
+                    f"An entry of exactly {payload_len} bytes was not listed")
+            if names["toolong"] in files:
+                raise NotAchievedException(
+                    f"An entry of {payload_len + 1} bytes was listed")
+            # dropping the one which cannot be sent must not end the listing
+            if names["control"] not in files:
+                raise NotAchievedException("The listing ended early")
+        finally:
+            shutil.rmtree(dirname)
+
+    def MAVFTPListDirectoryRoot(self):
+        '''test listing the root, whose path already ends in a separator'''
+
+        dirname = "ftp_root_test_dir"
+        filename = "ftp_root_test.txt"
+        content = b"root listing"
+
+        if os.path.exists(dirname):
+            shutil.rmtree(dirname)
+        os.mkdir(dirname)
+        self.write_content_to_filepath(content, filename)
+
+        try:
+            (entries, _) = self.ftp_list_dir("/")
+            (files, dirs) = self.ftp_listing_files_and_dirs(entries)
+
+            # the root's path already ends in a separator; adding another gave
+            # "//name", which stat'ed a different place entirely, and an entry
+            # which cannot be stat'ed is dropped - so every file in the root
+            # went missing and the listing came back with directories only
+            if filename not in files:
+                raise NotAchievedException(f"{filename} missing from the root listing")
+            if files[filename] != len(content):
+                raise NotAchievedException(
+                    f"{filename}: size {files[filename]}, expected {len(content)}")
+            if dirname not in dirs:
+                raise NotAchievedException(f"{dirname} missing from the root listing")
+        finally:
+            shutil.rmtree(dirname)
+            os.unlink(filename)
+
+    def MAVFTPShortReplyPadding(self):
+        '''test a short FTP reply carries no stale bytes past its size'''
+
+        dirname = "ftp_padding_test"
+        self.create_ftp_listing_pages(dirname, 20)
+
+        try:
+            seq = self.ftp_reset_sessions()
+
+            # list first, so the reply buffer is left holding entries
+            reply = self.ftp_op(seq, mavftp_op.OP_ListDirectory, self.ftp_path_bytes(dirname))
+            self.assert_ftp_ack(reply, "listing to fill the reply buffer")
+
+            # then ask past the end of the listing, which is answered with a
+            # one-byte EndOfFile NAK
+            path_bytes = self.ftp_path_bytes(dirname)
+            self.ftp_send(FTP_OP(
+                seq=reply.seq, session=0, opcode=mavftp_op.OP_ListDirectory,
+                size=len(path_bytes), req_opcode=0, burst_complete=0,
+                offset=1000, payload=path_bytes,
+            ))
+            m = self.mav.recv_match(type='FILE_TRANSFER_PROTOCOL', blocking=True, timeout=5)
+            if m is None:
+                raise NotAchievedException("No reply listing past the end")
+
+            raw = bytearray(m.payload)
+            size = raw[4]
+            opcode = raw[3]
+            if opcode != mavftp_op.OP_Nack:
+                raise NotAchievedException(f"Expected a Nack past the end, got opcode {opcode}")
+            if size != 1 or raw[12] != FtpError.EndOfFile:
+                raise NotAchievedException(
+                    f"Expected a one-byte EndOfFile Nack, got size={size} error={raw[12]}")
+
+            # everything after the error byte belongs to no reply at all
+            stale = bytes(raw[12 + size:]).rstrip(b"\0")
+            if stale:
+                raise NotAchievedException(
+                    f"Reply carried {len(stale)} bytes past its size: {stale[:32]!r}")
+        finally:
+            shutil.rmtree(dirname)
 
     def MAVFTPListDirectoryEdgeCases(self):
         '''test how FTP directory listing rejects and terminates'''
@@ -17717,7 +17804,7 @@ SERIAL5_BAUD 128
         descend below the min altitude fence floor.
         Caller must call wait_mode('RTL') to confirm the fence breach.
         '''
-        current_loc = self.mav.location()
+        current_loc = self.get_location()
         target_loc = self.offset_location_heading_distance(current_loc, 0, north_m)
 
         # At KalaupapaCliffs the terrain rises ~40 m in the first 100 m
@@ -17736,7 +17823,7 @@ SERIAL5_BAUD 128
         # must still be well past the cliff edge for the min-alt fence
         # floor (~150 m AMSL in both cliff tests) to sit clearly above
         # the terrain below.
-        reposition_alt_amsl = max(current_loc.alt, 215.0)
+        reposition_alt_amsl = max(current_loc.get_alt_m(AltFrame.ABSOLUTE), 215.0)
 
         # fly to target using GUIDED mode waypoint navigation
         self.run_cmd_int(
@@ -17773,7 +17860,7 @@ SERIAL5_BAUD 128
         ])
         self.set_parameters(self.FenceRelative_params())
         self.wait_ready_to_arm()
-        original_home = self.home_position_as_mav_location()
+        original_home = self.home_position_as_location()
 
         self.start_subtest("Above home-relative fence")
         self.set_home(self.offset_location_up(original_home, -2))
@@ -17819,7 +17906,7 @@ SERIAL5_BAUD 128
         '''fence max-alt threshold is measured relative to home, not EKF origin'''
         self.set_parameters(self.FenceRelativeToHome_params())
         self.wait_ready_to_arm()
-        original_home = self.home_position_as_mav_location()
+        original_home = self.home_position_as_location()
         home_ofs = 20
         fence_alt_max = 20  # m above home = 40 m above origin
         offset_home = self.offset_location_up(original_home, home_ofs)
@@ -17833,7 +17920,7 @@ SERIAL5_BAUD 128
         self.assert_mode_is(self.FenceRelative_TakeoffMode())
         self.set_rc(3, 1800)
         self.wait_mode('RTL', timeout=120)
-        expected_breach_alt = offset_home.alt + fence_alt_max
+        expected_breach_alt = offset_home.get_alt_m(AltFrame.ABSOLUTE) + fence_alt_max
         self.assert_altitude(expected_breach_alt, accuracy=10)
         self.disarm_vehicle(force=True)
 
@@ -17848,7 +17935,7 @@ SERIAL5_BAUD 128
         })
         self.set_parameters(params)
         self.wait_ready_to_arm()
-        original_home = self.home_position_as_mav_location()
+        original_home = self.home_position_as_location()
         home_ofs = 20
         offset_home = self.offset_location_up(original_home, home_ofs)
         self.set_home(offset_home)
@@ -17856,7 +17943,7 @@ SERIAL5_BAUD 128
         self.do_fence_enable()
         self.set_rc(3, 1200)
         self.wait_mode('RTL', timeout=120)
-        expected_breach_alt = offset_home.alt + fence_alt_min
+        expected_breach_alt = offset_home.get_alt_m(AltFrame.ABSOLUTE) + fence_alt_min
         self.assert_altitude(expected_breach_alt, accuracy=10)
         self.disarm_vehicle(force=True)
 
@@ -17864,7 +17951,7 @@ SERIAL5_BAUD 128
         '''fence max-alt relative to home when origin is above home'''
         self.set_parameters(self.FenceRelativeToHome_params())
         self.wait_ready_to_arm()
-        original_home = self.home_position_as_mav_location()
+        original_home = self.home_position_as_location()
         home_ofs = -20
         fence_alt_max = 30  # m above home = 10 m above origin
         offset_home = self.offset_location_up(original_home, home_ofs)
@@ -17878,7 +17965,7 @@ SERIAL5_BAUD 128
         self.assert_mode_is(self.FenceRelative_TakeoffMode())
         self.set_rc(3, 1800)
         self.wait_mode('RTL', timeout=120)
-        expected_breach_alt = offset_home.alt + fence_alt_max
+        expected_breach_alt = offset_home.get_alt_m(AltFrame.ABSOLUTE) + fence_alt_max
         self.assert_altitude(expected_breach_alt, accuracy=10)
         self.disarm_vehicle(force=True)
 
@@ -17895,7 +17982,7 @@ SERIAL5_BAUD 128
         })
         self.set_parameters(params)
         self.wait_ready_to_arm()
-        original_home = self.home_position_as_mav_location()
+        original_home = self.home_position_as_location()
         home_ofs = -20
         offset_home = self.offset_location_up(original_home, home_ofs)
         self.set_home(offset_home)
@@ -17904,7 +17991,7 @@ SERIAL5_BAUD 128
         self.assert_mode_is(self.FenceRelative_TakeoffMode())
         self.set_rc(3, 1200)
         self.wait_mode('RTL', timeout=120)
-        expected_breach_alt = offset_home.alt + fence_alt_min
+        expected_breach_alt = offset_home.get_alt_m(AltFrame.ABSOLUTE) + fence_alt_min
         self.assert_altitude(expected_breach_alt, accuracy=10)
         self.disarm_vehicle(force=True)
 
@@ -17923,7 +18010,7 @@ SERIAL5_BAUD 128
         })
         self.set_parameters(params)
         self.wait_ready_to_arm()
-        original_home = self.home_position_as_mav_location()
+        original_home = self.home_position_as_location()
         home_ofs = -20
         offset_home = self.offset_location_up(original_home, home_ofs)
         self.set_home(offset_home)
@@ -17932,7 +18019,7 @@ SERIAL5_BAUD 128
         self.assert_mode_is(self.FenceRelative_TakeoffMode())
         self.FenceRelative_fly_north_then_descend(300)
         self.wait_mode('RTL', timeout=120)
-        expected_breach_alt = offset_home.alt + fence_alt_min
+        expected_breach_alt = offset_home.get_alt_m(AltFrame.ABSOLUTE) + fence_alt_min
         self.assert_altitude(expected_breach_alt, accuracy=10)
         self.disarm_vehicle(force=True)
         self.customise_SITL_commandline([])
@@ -17943,7 +18030,7 @@ SERIAL5_BAUD 128
         self.wait_ready_to_arm()
         origin_alt_m = self.poll_message("GPS_GLOBAL_ORIGIN").altitude / 1000.0
         fence_alt_max = 10  # m above origin = 30 m above home
-        original_home = self.home_position_as_mav_location()
+        original_home = self.home_position_as_location()
         self.set_home(self.offset_location_up(original_home, -20))
         self.set_parameters({
             "FENCE_TYPE": 1,   # ALT_MAX only
@@ -17970,7 +18057,7 @@ SERIAL5_BAUD 128
         self.set_parameters(params)
         self.wait_ready_to_arm()
         origin_alt_m = self.poll_message("GPS_GLOBAL_ORIGIN").altitude / 1000.0
-        original_home = self.home_position_as_mav_location()
+        original_home = self.home_position_as_location()
         self.set_home(self.offset_location_up(original_home, -20))
         self.takeoff(25, mode=self.FenceRelative_TakeoffMode())
         self.do_fence_enable()
@@ -17990,7 +18077,7 @@ SERIAL5_BAUD 128
         self.takeoff(10, mode=self.FenceRelative_TakeoffMode())
         # now move home 20 m above origin; vehicle at 10 m above origin
         # is safely below the fence max at 50 m above origin
-        original_home = self.mav.location()
+        original_home = self.get_location()
         self.set_home(self.offset_location_up(original_home, 10))
         self.set_parameters({
             "FENCE_TYPE": 1,   # ALT_MAX only
@@ -18024,7 +18111,7 @@ SERIAL5_BAUD 128
         self.takeoff(30, mode=self.FenceRelative_TakeoffMode())
         # now move home 20 m above origin; vehicle at 30 m above origin
         # is safely above the fence min at 15 m above origin
-        original_home = self.mav.location()
+        original_home = self.get_location()
         self.set_home(self.offset_location_up(original_home, -10))
         self.do_fence_enable()
         self.assert_mode_is(self.FenceRelative_TakeoffMode())
@@ -18110,9 +18197,9 @@ SERIAL5_BAUD 128
         self.install_terrain_handlers_context()
         self.set_parameters(self.FenceRelativeToTerrain_params())
         self.wait_ready_to_arm()
-        original_home = self.home_position_as_mav_location()
-        # home is placed 20 m below terrain; terrain AMSL ≈ original_home.alt
-        terrain_alt_amsl = original_home.alt
+        original_home = self.home_position_as_location()
+        # home is placed 20 m below terrain; terrain AMSL ≈ original home alt
+        terrain_alt_amsl = original_home.get_alt_m(AltFrame.ABSOLUTE)
         fence_alt_max = 10  # m AGL = 30 m above home
         offset_home = self.offset_location_up(original_home, -20)
         self.set_home(offset_home)
@@ -18141,9 +18228,9 @@ SERIAL5_BAUD 128
         })
         self.set_parameters(params)
         self.wait_ready_to_arm()
-        original_home = self.home_position_as_mav_location()
-        # home is placed 20 m below terrain; terrain AMSL ≈ original_home.alt
-        terrain_alt_amsl = original_home.alt
+        original_home = self.home_position_as_location()
+        # home is placed 20 m below terrain; terrain AMSL ≈ original home alt
+        terrain_alt_amsl = original_home.get_alt_m(AltFrame.ABSOLUTE)
         offset_home = self.offset_location_up(original_home, -20)
         self.set_home(offset_home)
         self.takeoff(25, mode=self.FenceRelative_TakeoffMode())
@@ -18358,7 +18445,7 @@ SERIAL5_BAUD 128
             now = self.get_sim_time()
             if now - tstart > timeout:
                 raise AutoTestTimeoutException("Did not get onto circle")
-            here = self.mav.location()
+            here = self.get_location()
             got_radius = self.get_distance(loc, here)
             average_radius = 0.95*average_radius + 0.05*got_radius
             on_radius = abs(got_radius - want_radius) < epsilon
