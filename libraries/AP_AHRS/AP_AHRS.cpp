@@ -735,8 +735,8 @@ bool AP_AHRS::using_airspeed_sensor() const
  */
 bool AP_AHRS::_should_use_airspeed_sensor(uint8_t airspeed_index) const
 {
-    const auto *airspeed = AP::airspeed();
-    if (airspeed == nullptr || !airspeed->healthy(airspeed_index) || !airspeed->use(airspeed_index)) {
+    const auto &airspeed = AP::airspeed();
+    if (!airspeed.healthy(airspeed_index) || !airspeed.use(airspeed_index)) {
         return false;
     }
     nav_filter_status filter_status;
@@ -764,7 +764,7 @@ bool AP_AHRS::_airspeed_EAS(float &airspeed_ret, AirspeedEstimateType &airspeed_
 #endif
 #if AP_AIRSPEED_ENABLED
     if (_should_use_airspeed_sensor(idx)) {
-        airspeed_ret = AP::airspeed()->get_airspeed(idx);
+        airspeed_ret = AP::airspeed().get_airspeed(idx);
 
 #if AP_GPS_ENABLED
         if (_wind_max > 0 && AP::gps().status() >= AP_GPS_FixType::FIX_2D) {
@@ -1010,49 +1010,17 @@ AP_AHRS_Backend::Estimates *AP_AHRS::estimates_for_type(EKFType type)
 bool AP_AHRS::set_origin(const Location &loc)
 {
     WITH_SEMAPHORE(_rsem);
-#if HAL_NAVEKF2_AVAILABLE
-    const bool ret2 = ekf2.set_origin(loc);
-#endif
-#if HAL_NAVEKF3_AVAILABLE
-    const bool ret3 = ekf3.set_origin(loc);
-#endif
-#if AP_AHRS_EXTERNAL_ENABLED
-    const bool ret_ext = external.set_origin(loc);
-#endif
-
-    // return success if active EKF's origin was set
-    bool success = false;
-    switch (active_EKF_type()) {
-#if AP_AHRS_DCM_ENABLED
-    case EKFType::DCM:
-        break;
-#endif
-
-#if HAL_NAVEKF2_AVAILABLE
-    case EKFType::TWO:
-        success = ret2;
-        break;
-#endif
-
-#if HAL_NAVEKF3_AVAILABLE
-    case EKFType::THREE:
-        success = ret3;
-        break;
-#endif
-
-#if AP_AHRS_SIM_ENABLED
-    case EKFType::SIM:
-        // never allow origin set in SITL. The origin is set by the
-        // simulation backend
-        break;
-#endif
-#if AP_AHRS_EXTERNAL_ENABLED
-    case EKFType::EXTERNAL:
-        success = ret_ext;
-        break;
-#endif
+    for (auto &backend_and_estimates : backends_and_estimates) {
+        auto &backend = backend_and_estimates.backend;
+        if (&backend == active_backend) {
+            continue;
+        }
+        // note that SITL and DCM ignore this set_origin call via
+        // an empty base-class implementation:
+        backend.set_origin(loc);
     }
-    return success;
+    // return success if active EKF's origin was set
+    return active_backend->set_origin(loc);
 }
 
 // Record the current valid origin to parameters
@@ -2043,8 +2011,8 @@ bool AP_AHRS::airspeed_sensor_data_being_consumed(void) const
 {
     // This is obviously a lie, we should be looking in the
     // backend results to see if it truly is using the data.
-    const AP_Airspeed *_airspeed = AP::airspeed();
-    return _airspeed != nullptr && _airspeed->use() && _airspeed->healthy();
+    const AP_Airspeed &_airspeed = AP::airspeed();
+    return _airspeed.use() && _airspeed.healthy();
 }
 
 #endif  // AP_AIRSPEED_ENABLED
