@@ -1502,12 +1502,13 @@ void SLT_Transition::update()
             } else {
                 switch (QuadPlane::TRANS_FAIL::ACTION(quadplane.transition_failure.action)) {
                     case QuadPlane::TRANS_FAIL::ACTION::QLAND:
-                        plane.set_mode(plane.mode_qland, ModeReason::VTOL_FAILED_TRANSITION);
+                        IGNORE_RETURN(plane.set_mode(plane.mode_qland, ModeReason::VTOL_FAILED_TRANSITION));
                         break;
 
                     case QuadPlane::TRANS_FAIL::ACTION::QRTL:
-                        plane.set_mode(plane.mode_qrtl, ModeReason::VTOL_FAILED_TRANSITION);
-                        quadplane.poscontrol.set_state(QuadPlane::QPOS_POSITION1);
+                        if (plane.set_mode(plane.mode_qrtl, ModeReason::VTOL_FAILED_TRANSITION)) {
+                            quadplane.poscontrol.set_state(QuadPlane::QPOS_POSITION1);
+                        }
                         break;
 
                     default:
@@ -2984,15 +2985,7 @@ void QuadPlane::assign_tilt_to_fwd_thr(void)
         nav_pitch_upper_limit_cd *= speed_scaler;
         nav_pitch_upper_limit_cd = MIN(nav_pitch_upper_limit_cd, angle_max_cd);
 
-        const float tconst = 0.5f;
-        const float dt = AP_HAL::millis() - q_pitch_limit_update_ms;
-        q_pitch_limit_update_ms = AP_HAL::millis();
-        if (is_positive(dt)) {
-            const float coef = dt / (dt + tconst);
-            q_bck_pitch_lim_cd = (1.0f - coef) * q_bck_pitch_lim_cd + coef * nav_pitch_upper_limit_cd;
-        }
-
-        plane.nav_pitch_cd = MIN(plane.nav_pitch_cd, (int32_t)q_bck_pitch_lim_cd);
+        plane.nav_pitch_cd = MIN(plane.nav_pitch_cd, (int32_t)nav_pitch_upper_limit_cd);
 
 #if HAL_LOGGING_ENABLED
         // @LoggerMessage: QBRK
@@ -3000,15 +2993,13 @@ void QuadPlane::assign_tilt_to_fwd_thr(void)
         // @Field: TimeUS: Time since system startup
         // @Field: SpdScaler: braking speed scaler
         // @Field: NPULCD: upper limit for navigation pitch
-        // @Field: QBPLCD: upper limit for back transition pitch
         // @Field: NPCD: demanded navigation pitch
         AP::logger().WriteStreaming("QBRK",
-                                "TimeUS,SpdScaler,NPULCD,QBPLCD,NPCD",  // labels
-                                "Qffii",    // fmt
+                                "TimeUS,SpdScaler,NPULCD,NPCD",  // labels
+                                "Qffi",    // fmt
                                 AP_HAL::micros64(),
                                 (double)speed_scaler,
                                 (double)nav_pitch_upper_limit_cd,
-                                (int32_t)q_bck_pitch_lim_cd,
                                 (int32_t)plane.nav_pitch_cd);
 #endif
     }
@@ -3494,14 +3485,14 @@ bool QuadPlane::verify_vtol_takeoff(const AP_Mission::Mission_Command &cmd)
     // check for failure conditions
     if (is_positive(takeoff_failure_scalar) && ((now - takeoff_start_time_ms) > takeoff_time_limit_ms)) {
         gcs().send_text(MAV_SEVERITY_CRITICAL, "Failed to complete takeoff within time limit");
-        plane.set_mode(plane.mode_qland, ModeReason::VTOL_FAILED_TAKEOFF);
+        IGNORE_RETURN(plane.set_mode(plane.mode_qland, ModeReason::VTOL_FAILED_TAKEOFF));
         return false;
     }
 
 #if AP_AIRSPEED_ENABLED
     if (is_positive(maximum_takeoff_airspeed_ms) && (plane.airspeed.get_airspeed() > maximum_takeoff_airspeed_ms)) {
         gcs().send_text(MAV_SEVERITY_CRITICAL, "Failed to complete takeoff, excessive wind");
-        plane.set_mode(plane.mode_qland, ModeReason::VTOL_FAILED_TAKEOFF);
+        IGNORE_RETURN(plane.set_mode(plane.mode_qland, ModeReason::VTOL_FAILED_TAKEOFF));
         return false;
     }
 #endif

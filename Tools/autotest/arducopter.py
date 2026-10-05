@@ -5263,6 +5263,18 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             "altitude": int(origin_alt*1000),  # m -> mm
         })
 
+    def COMMAND_LONG_positional_command_int_only(self):
+        '''check positional commands with no COMMAND_LONG frame are refused as COMMAND_INT-only'''
+        for command in (
+                mavutil.mavlink.MAV_CMD_DO_REPOSITION,
+                mavutil.mavlink.MAV_CMD_EXTERNAL_POSITION_ESTIMATE,
+                mavutil.mavlink.MAV_CMD_DO_SET_GLOBAL_ORIGIN,
+        ):
+            self.run_cmd(
+                command,
+                want_result=mavutil.mavlink.MAV_RESULT_COMMAND_INT_ONLY,
+            )
+
     def FarOrigin(self):
         '''fly a mission far from the vehicle origin'''
         # Fly mission #1
@@ -9041,10 +9053,10 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             raise NotAchievedException("Default gimbal attitude rate: want=50Hz got=%fHz" % attitude_rate)
 
         def command(pitch, pitch_rate=float('nan'), flags=0):
-            start = self.get_sim_time()
             self.context_clear_collection('GIMBAL_DEVICE_SET_ATTITUDE')
             self.run_cmd(mavutil.mavlink.MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW,
                          p1=pitch, p2=0, p3=pitch_rate, p4=0, p5=flags)
+            start = self.get_sim_time_cached()
             while True:
                 if self.get_sim_time_cached() - start > 0.4:
                     raise NotAchievedException("Changed gimbal target waited for the refresh interval")
@@ -9089,17 +9101,22 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.delay_sim_time(1.2, reason="check disabled target transmission")
         if self.context_collection('GIMBAL_DEVICE_SET_ATTITUDE'):
             raise NotAchievedException("Disabled gimbal target was sent")
+        self.context_clear_collection('GIMBAL_DEVICE_SET_ATTITUDE')
         self.set_parameter("MNT1_TARG_RATE", 1)
-        self.assert_receive_message('GIMBAL_DEVICE_SET_ATTITUDE', timeout=0.4)
+        start = self.get_sim_time_cached()
+        while not self.context_collection('GIMBAL_DEVICE_SET_ATTITUDE'):
+            if self.get_sim_time_cached() - start > 1.5:
+                raise NotAchievedException("Re-enabled gimbal target was not sent")
+            self.mav.recv_match(blocking=True, timeout=0.01)
 
         self.context_collect('COMMAND_INT')
         here = self.get_location(frame=AltFrame.ABSOLUTE)
         for offset in (1000, 2000):
-            start = self.get_sim_time()
             self.context_clear_collection('COMMAND_INT')
             self.run_cmd_int(mavutil.mavlink.MAV_CMD_DO_SET_ROI_LOCATION,
                              x=int(here.lat * 1e7) + offset, y=int(here.lng * 1e7), z=600,
                              frame=mavutil.mavlink.MAV_FRAME_GLOBAL)
+            start = self.get_sim_time_cached()
             while True:
                 if self.get_sim_time_cached() - start > 0.4:
                     raise NotAchievedException("Changed ROI waited for the refresh interval")
@@ -10425,6 +10442,25 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             vehicle.close()
             mavutil.mavfile_global = saved_mavfile_global
 
+    def MT11MAVFTP32bit(self):
+        """Camera discovery, telemetry and FTP with wide vehicle and GCS IDs."""
+        old_source = self.mav.source_system
+        old_sysid = self.sysid_thismav()
+        self.send_set_parameter_direct("MAV_SYSID", 100000)
+        self.mav.target_system = 100000
+        with self.mavlink_target_system_context():
+            try:
+                self.wait_heartbeat(timeout=60)
+                self.mav.source_system = 70000
+                self.mav.mav.srcSystem = 70000
+                self.MT11MAVFTP()
+            finally:
+                self.mav.source_system = old_source
+                self.mav.mav.srcSystem = old_source
+                self.send_set_parameter_direct("MAV_SYSID", old_sysid)
+                self.mav.target_system = old_sysid
+                self.wait_heartbeat(timeout=60)
+
     def MT11MAVFTP(self):
         '''list and download the simulated camera definition through a unicast link'''
         self.set_parameters({
@@ -11036,6 +11072,78 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         want_img_idx[0] += 2
         self.wait_camera_img_idx([(0, want_img_idx[0]), (1, img_idx_at_stop)])
 
+    def CameraServoZoomFocusSpeed(self):
+        '''test CAM1_ZOM_RAT_MAX and CAM1_FOC_RAT_MAX set the servo camera zoom and focus rates'''
+        zoom_chan = 9
+        focus_chan = 10
+        zoom_function = 180  # CameraZoom
+        focus_function = 92   # CameraFocus
+        zoom_speed = 25  # %/s
+        focus_speed = 40  # %/s
+        start_pct = 0
+        sample_s = 1
+        rate_tolerance = 1.5  # %/s
+
+        self.set_parameters({
+            "CAM1_TYPE": 1,  # servo
+            "CAM1_ZOM_RAT_MAX": zoom_speed,
+            "CAM1_FOC_RAT_MAX": focus_speed,
+            "SERVO%u_FUNCTION" % zoom_chan: zoom_function,
+            "SERVO%u_FUNCTION" % focus_chan: focus_function,
+        })
+        self.reboot_sitl()  # needed for CAM1_TYPE to take effect
+
+        pwm_min = self.get_parameter("SERVO%u_MIN" % zoom_chan)
+        pwm_max = self.get_parameter("SERVO%u_MAX" % zoom_chan)
+        pwm_span = pwm_max - pwm_min
+
+        # start at 0% so a slightly long sample cannot hit a limit
+        self.run_cmd_int(
+            mavutil.mavlink.MAV_CMD_SET_CAMERA_ZOOM,
+            p1=mavutil.mavlink.ZOOM_TYPE_RANGE,
+            p2=start_pct,
+        )
+        self.run_cmd_int(
+            mavutil.mavlink.MAV_CMD_SET_CAMERA_FOCUS,
+            p1=mavutil.mavlink.FOCUS_TYPE_RANGE,
+            p2=start_pct,
+        )
+
+        # zoom in and focus out at full speed
+        self.run_cmd_int(
+            mavutil.mavlink.MAV_CMD_SET_CAMERA_ZOOM,
+            p1=mavutil.mavlink.ZOOM_TYPE_CONTINUOUS,
+            p2=1,
+        )
+        self.run_cmd_int(
+            mavutil.mavlink.MAV_CMD_SET_CAMERA_FOCUS,
+            p1=mavutil.mavlink.FOCUS_TYPE_CONTINUOUS,
+            p2=1,
+        )
+
+        # SERVO_OUTPUT_RAW.time_usec is AP_HAL::micros(), so the check does
+        # not depend on how promptly the commands were handled
+        self.drain_mav()
+        first = self.assert_receive_message('SERVO_OUTPUT_RAW')
+        self.delay_sim_time(sample_s, "camera zoom and focus to move")
+        self.drain_mav()
+        second = self.assert_receive_message('SERVO_OUTPUT_RAW')
+        dt = (second.time_usec - first.time_usec) * 1.0e-6
+        if dt < 0.8 * sample_s:
+            raise NotAchievedException(
+                "SERVO_OUTPUT_RAW samples too close together: want>=%fs got=%fs" % (0.8 * sample_s, dt))
+
+        zoom_rate = (getattr(second, "servo%u_raw" % zoom_chan) -
+                     getattr(first, "servo%u_raw" % zoom_chan)) * 100.0 / (pwm_span * dt)
+        focus_rate = (getattr(second, "servo%u_raw" % focus_chan) -
+                      getattr(first, "servo%u_raw" % focus_chan)) * 100.0 / (pwm_span * dt)
+        if abs(zoom_rate - zoom_speed) > rate_tolerance:
+            raise NotAchievedException(
+                "zoom rate want=%f%%/s got=%f%%/s" % (zoom_speed, zoom_rate))
+        if abs(focus_rate - focus_speed) > rate_tolerance:
+            raise NotAchievedException(
+                "focus rate want=%f%%/s got=%f%%/s" % (focus_speed, focus_rate))
+
     def assert_mount_rpy(self, r, p, y, tolerance=1):
         '''assert mount atttiude in degrees'''
         got_r, got_p, got_y, yaw_is_absolute = self.get_mount_roll_pitch_yaw_deg()
@@ -11236,15 +11344,6 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                 "primary_control_compid": 38,
             })
 
-            # ardupilot currently handles this incorrectly:
-            # self.start_subtest("self-controlled")
-            # method(mavutil.mavlink.MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE, p1=-2)
-            # self.assert_received_message_field_values('GIMBAL_MANAGER_STATUS', {
-            #     "gimbal_device_id": 1,
-            #     "primary_control_sysid": 1,
-            #     "primary_control_compid": 1,
-            # })
-
             self.start_subtest("release control")
             method(
                 mavutil.mavlink.MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE,
@@ -11262,6 +11361,60 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                 "primary_control_sysid": 0,
                 "primary_control_compid": 0,
             })
+
+            def check_control(sysid, compid):
+                self.drain_mav()
+                self.assert_received_message_field_values('GIMBAL_MANAGER_STATUS', {
+                    "primary_control_sysid": sysid if sysid <= 255 else 0,
+                    "primary_control_compid": compid,
+                })
+
+            command = mavutil.mavlink.MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE
+            self.start_subtest("fractional IDs retain truncation")
+            method(command, p1=37.9, p2=38.9)
+            check_control(37, 38)
+            method(command, p1=-1.9)
+            check_control(37, 38)
+            method(command, p1=-0.9, p2=38.9)
+            check_control(0, 38)
+
+            self.start_subtest("full-range IDs and sender sentinels")
+            old_source = self.mav.source_system
+            old_component = self.mav.source_component
+            try:
+                for sysid in (16777216, 16777218, 0x80000000, 0xFFFFFF00):
+                    method(command, p1=sysid, p2=old_component)
+                    check_control(sysid, old_component)
+                    # Status has only an 8-bit sysid. Prove exact ownership by
+                    # attempting release from a neighbour, then the actual ID.
+                    self.mav.source_system = sysid + 1
+                    self.mav.mav.srcSystem = sysid + 1
+                    method(command, p1=-3)
+                    check_control(sysid, old_component)
+                    self.mav.source_system = sysid
+                    self.mav.mav.srcSystem = sysid
+                    method(command, p1=-3)
+                    check_control(0, 0)
+
+                self.mav.source_system = 0xFFFFFFFF
+                self.mav.mav.srcSystem = 0xFFFFFFFF
+                method(command, p1=-2.9)
+                check_control(0xFFFFFFFF, old_component)
+                method(command, p1=-3)
+                check_control(0, 0)
+            finally:
+                self.mav.source_system = old_source
+                self.mav.mav.srcSystem = old_source
+
+            self.start_subtest("out-of-range IDs leave ownership unchanged")
+            method(command, p1=37, p2=38)
+            # Legacy range comparisons trap on NaN with SITL float exceptions enabled.
+            for value in (float('inf'), float('-inf'), -3.1, 0xFFFFFFFF, 2**32, 2**40):
+                method(command, p1=value, p2=38, want_result=mavutil.mavlink.MAV_RESULT_FAILED)
+                check_control(37, 38)
+            for value in (float('inf'), float('-inf'), -3.1, 256):
+                method(command, p1=37, p2=value, want_result=mavutil.mavlink.MAV_RESULT_FAILED)
+                check_control(37, 38)
 
         self.context_pop()
         self.reboot_sitl()
@@ -11488,6 +11641,28 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                 (expected, instance, count))
         self.progress("Notch %u has %u filters" % (instance, count))
 
+    def assert_notch_source_count(self, expected, instance=0):
+        '''check the number of frequency sources a harmonic notch instance is
+        tracking, as logged in the NDn field of FTN.  Note that FTN is only
+        logged when the notch has more than one frequency source, so
+        notch-per-motor must be enabled'''
+        mlog = self.dfreader_for_current_onboard_log()
+        count = None
+        while True:
+            m = mlog.recv_match(type="FTN")
+            if m is None:
+                break
+            if m.I != instance:
+                continue
+            count = m.NDn
+        if count is None:
+            raise NotAchievedException("Did not find a FTN message for notch %u" % instance)
+        if count != expected:
+            raise NotAchievedException(
+                "Expected %u notch sources for notch %u, got %u" %
+                (expected, instance, count))
+        self.progress("Notch %u is tracking %u sources" % (instance, count))
+
     def DynamicNotches(self):
         """Use dynamic harmonic notch to control motor noise."""
         self.progress("Flying with dynamic notches")
@@ -11680,6 +11855,38 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             raise NotAchievedException(
                 "Notch-per-motor peak was higher than single-notch peak %fdB > %fdB" %
                 (esc_peakdb2, esc_peakdb1))
+
+    def DynamicRpmNotchesESCMask(self):
+        """Check INS_HNTCH_ESCMSK excludes motors from the ESC telemetry notch."""
+        self.progress("Checking ESC mask for ESC telemetry driven dynamic notches")
+
+        self.set_rc_default()
+        self.set_parameters({
+            "LOG_BITMASK": 958,
+            "LOG_DISARMED": 0,
+            "SIM_ESC_TELEM": 1,
+            "INS_HNTCH_ENABLE": 1,
+            "INS_HNTCH_REF": 1.0,
+            "INS_HNTCH_MODE": 3, # ESC telemetry
+            "INS_HNTCH_OPTS": 2, # notch-per-motor, so FTN and FCN are logged
+        })
+
+        # the default frame is a quad on outputs 1 to 4.  A mask of zero means
+        # use every ESC, masking down to the first two should halve the notches
+        for (esc_mask, sources) in [(0, 4), (0b0011, 2)]:
+            self.progress("Expecting %u notches with INS_HNTCH_ESCMSK=%u" % (sources, esc_mask))
+            self.set_parameter("INS_HNTCH_ESCMSK", esc_mask)
+            self.reboot_sitl()
+
+            self.takeoff(10, mode="ALT_HOLD")
+            self.hover_for_interval(5)
+            self.do_RTL()
+
+            # note that the allocated filter count in FCN cannot be checked
+            # here: before ESC telemetry arrives the notch falls back to
+            # throttle tracking, which is a notch per motor regardless of the
+            # mask, and the filter array never shrinks again
+            self.assert_notch_source_count(sources, 0)
 
     def DynamicRpmNotchesRateThread(self):
         """Use dynamic harmonic notch to control motor noise via ESC telemetry."""
@@ -14602,6 +14809,13 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
     def AuxSwitchOptions(self):
         '''Test random aux mode options'''
+        # establish home before exercising the clear-waypoints switch:
+        # when home is set (EKF origin arriving on a loaded machine
+        # well into the test) the firmware writes home back into the
+        # mission as item 0, and a clear racing that ends with
+        # MIS_TOTAL=1:
+        #     Unexpected count got=1 want=0
+        self.wait_ready_to_arm()
         self.set_parameter("RC7_OPTION", 58) # clear waypoints
         self.load_mission("copter_loiter_to_alt.txt")
         self.set_rc(7, 1000)
@@ -18858,215 +19072,223 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         '''return list of all tests'''
         ret = super(AutoTestCopter, self).tests()  # about 5 mins and ~20 initial tests from autotest/vehicle_test_suite.py
         ret.extend([
-             self.NavDelayTakeoffAbsTime,
-             self.NavDelayAbsTime,
-             self.NavDelay,
-             self.GuidedSubModeChange,
-             self.MAV_CMD_CONDITION_YAW,
-             self.LoiterToAlt,
-             self.PayloadPlaceMission,
-             self.PayloadPlaceMissionOpenGripper,
-             self.PrecisionLoiterCompanion,
-             self.Landing,
-             self.PrecisionLanding,
-             self.SetModesViaModeSwitch,
-             self.BackupFence,
-             self.SetModesViaAuxSwitch,
-             self.AuxSwitchOptions,
-             self.AuxFunctionsInMission,
-             self.AutoTune,
-             self.AutoTuneYawD,
-             self.NoRCOnBootPreArmFailure,
+            self.SetModesViaModeSwitch,
+            self.WPArcs2,
+            self.BatteryFailsafeBrakeLandNoGPS,
+            self.AC_Avoidance_Proximity,
+            self.AC_Avoidance_Fence,
+            self.SetpointGlobalVel,
+            self.SetpointBadVel,
+            self.ModeLoiter,
+            self.CompassHealthArming,
+            self.OpticalFlowLocation,
+            self.OpticalFlowCalibration,
+            self.BeaconPosition,
+            self.MAV_CMD_DO_SET_ROI_WPNEXT_OFFSET,
+            self.SurfaceTracking,
+            self.SurfaceTracking2,
+            self.FlyRangeFinderMAVlink,
+            self.FlyRangeFinderSITL,
+            self.RangeFinderDriversMaxAlt_AinsteinLRD1,
+            self.RangeFinderDriversMaxAlt_AinsteinLRD1_v19,
+            self.AltTypes,
+            self.MAVLandedStateTakeoff,
+            self.MAV_CMD_NAV_RETURN_TO_LAUNCH,
+            self.FenceRelativeToHomeMaxAltOriginAbove,
+            self.FenceRelativeToHomeCliff,
+            self.DynamicRpmNotches, # Do not add attempts to this - failure is sign of a bug
+            self.DynamicRpmNotchesRateThread,
+            self.DynamicRpmNotchesESCMask,
+            self.WPYawBehaviour1RTL,
+            self.AHRSSwitchBackendPositionNEReset,
+            self.GPSForYawAttitudeCorrection,
+            self.EK3_RNG_USE_HGT,
+            self.NoRC,
+            self.ThrottleGainBoost,
+            self.ScriptMountPOI,
+            self.GuidedYawRate,
+            self.MISSION_OPTION_CLEAR_MISSION_AT_BOOT,
+            self.SafetySwitch,
+            self.HomeCircleInclusionFence_SetHome,
+            self.HomeCircleInclusionFence_Avoidance_SetHome,
+            self.BatteryInternalUseOnly,
+            self.CommonOriginExternalAHRS,
+            self.CommonOriginExternalAHRSReceives,
+            self.AHRSExternalNoAttitudeAirspeedIndex,
+            self.TestTetherStuck,
+            self.EK3_EXT_NAV_vel_without_vert,
+            self.test_EKF3_option_disable_lane_switch,
+            self.UTMGlobalPositionWaypoint,
         ])
         return ret
 
     def tests1b(self):
         '''return list of all tests'''
         ret = ([
-             self.ThrowMode,
-             self.ThrowModeRPMMin,
-             self.BrakeMode,
-             self.RecordThenPlayMission,
-             self.ThrottleFailsafe,
-             self.ThrottleFailsafePassthrough,
-             self.GCSFailsafe,
-             self.TerrainFailsafe,
-             self.CustomController,
-             self.WPArcs,
-             self.WPArcs2,
-             self.CorrectedDeltaVelocity,
+            # anomalous: ~12 minutes on CI against ~30s on a desktop; to be investigated
+            self.DroneCANCompass,
         ])
         return ret
 
     def tests1c(self):
         '''return list of all tests'''
         ret = ([
-             self.BatteryFailsafeDisabled,
-             self.BatteryFailsafeDisabledOnGround,
-             self.BatteryFailsafeTwoStage,
-             self.BatteryFailsafeTwoStageSmartRTL,
-             self.BatteryFailsafeOptionsContinueLanding,
-             self.BatteryFailsafeCriticalLanding,
-             self.BatteryFailsafeBrakeLand,
-             self.BatteryFailsafeBrakeLandNoGPS,
-             self.BatteryFailsafeTerminate,
-             self.BatteryMissing,
-             self.VibrationFailsafe,
-             self.EK3AccelBias,
-             self.EK3_OptflowTerrainScaleHeight,
-             self.EK3_AccelBiasInhibitOnGroundMoving,
-             self.EK3_AccelBiasZeroVelOptFlow,
-             self.EK3_ZeroVelFusionNotUsedWithGPS,
-             self.TakeoffGroundEffectAlt,
-             self.BaroGroundEffectRangefinderSwitch,
-             self.TouchdownGroundEffectAlt,
-             self.StabilityPatch,
-             self.OBSTACLE_DISTANCE_3D,
-             self.AC_Avoidance_Proximity,
-             self.AC_Avoidance_Proximity_AVOID_ALT_MIN,
-             self.AC_Avoidance_Fence,
-             self.AC_Avoidance_Beacon,
-             self.AvoidanceAltFence,
-             self.BaroWindCorrection,
-             self.SetpointGlobalPos,
-             self.ThrowDoubleDrop,
-             self.SetpointGlobalVel,
-             self.SetpointBadVel,
-             self.SplineTerrain,
-             self.TakeoffCheck,
-             self.GainBackoffTakeoff,
+            self.NavDelayTakeoffAbsTime,
+            self.NavDelay,
+            self.MAV_CMD_CONDITION_YAW,
+            self.SetModesViaAuxSwitch,
+            self.AuxSwitchOptions,
+            self.BrakeMode,
+            self.ThrottleFailsafePassthrough,
+            self.BatteryMissing,
+            self.VibrationFailsafe,
+            self.EK3_AccelBiasInhibitOnGroundMoving,
+            self.EK3_ZeroVelFusionNotUsedWithGPS,
+            self.OBSTACLE_DISTANCE_3D,
+            self.AC_Avoidance_Beacon,
+            self.BaroWindCorrection,
+            self.SplineTerrain,
+            self.HorizontalAvoidFence,
+            self.ModeFlowHold,
+            self.SplineLastWaypoint,
+            self.ATTITUDE_FAST,
+            self.PosHoldTakeOff,
+            self.ParameterValidation,
+            self.IE24,
+            self.FenceRelativeToHomeMaxAlt,
+            self.PIDNotches,
+            self.mission_NAV_LOITER_TURNS_zero_radius,
+            self.SixCompassCalibrationAndReordering,
+            self.AltEstimation,
+            self.FlyEachFrame,
+            self.GPSBlendingLog,
+            self.GPSBlendingAffinity,
+            self.ProximitySensors,
+            self.MISSION_START,
+            self.AUTO_LAND_TO_BRAKE,
+            self.GPS_INPUT,
+            self.ScriptMountAllModes,
+            self.MountTopotek,
+            self.MountAVTCM62,
+            self.MountMAVLinkROI,
+            self.MountMAVLinkTargetRefresh,
+            self.MAVLinkCameraCaptureStatus,
+            self.MAVLinkUnicast,
+            self.MAVLinkCameraRelay,
+            self.MAVLinkCameraSelectors,
+            self.MAVLinkCameraComponentIDs,
+            self.MAVLinkCameraMixed,
+            self.MAVLinkCameraStreams,
+            self.MT11MAVFTP,
+            self.MT11MAVFTP32bit,
+            self.MountMT11,
+            self.MountMT11Telemetry,
+            self.IMUConsistency,
+            self.WaitAndMaintainAttitude_RCFlight,
+            self.HomeCircleInclusionFence_MultipleHomeCircle,
+            self.HomeCircleInclusionFence_Avoidance,
+            self.HomeAltResetTest,
         ])
         return ret
 
     def tests1d(self):
         '''return list of all tests'''
         ret = ([
-             self.HorizontalFence,
-             self.HorizontalAvoidFence,
-             self.MaxAltFence,
-             self.MaxAltFenceAvoid,
-             self.MinAltFence,
-             self.FenceAltFrameComparison,
-             self.MinAltFenceAvoid,
-             self.FenceFloorEnabledLanding,
-             self.FenceFloorAutoDisableLanding,
-             self.FenceFloorAutoEnableOnArming,
-             self.FenceMargin,
-             self.FenceUpload_MissionItem,
-             self.GuidedRejectOutsideFence,
-             self.AutoTuneSwitch,
-             self.AutoTuneAux,
-             self.GPSGlitchLoiter,
-             self.GPSGlitchLoiter2,
-             self.GPSGlitchAuto,
-             self.GPSFixTypes,
-             self.AirModeStabZeroThrottle,
-             self.AirModeLanding,
-             self.ModeAltHold,
-             self.ModeLoiter,
-             self.SimpleMode,
-             self.SuperSimpleCircle,
-             self.ModeCircle,
-             self.MagFail,
-             self.CompassHealthArming,
-             self.OpticalFlow,
-             self.OpticalFlowLocation,
-             self.OpticalFlowLimits,
-             self.LoiterNoCompassYaw,
-             self.LoiterNoCompassYawGPS,
-             self.FlowGyroZBiasNoYawReference,
-             self.FlowAidingRestartsWithoutYawFusion,
-             self.LoiterFlowBrakeOvershoot,
-             self.ModeFlowHold,
-             self.OpticalFlowCalibration,
-             self.MotorFail,
-             self.ModeFlip,
-             self.CopterMission,
-             self.TakeoffAlt,
-             self.SplineLastWaypoint,
-             self.Gripper,
-             self.TestLocalHomePosition,
-             self.TestGripperMission,
-             self.VisionPosition,
-             self.ATTITUDE_FAST,
-             self.BaseLoggingRates,
-             self.BodyFrameOdom,
-             self.GPSViconSwitching,
+            self.AuxFunctionsInMission,
+            self.ThrowModeRPMMin,
+            self.GCSFailsafe,
+            self.StabilityPatch,
+            self.AC_Avoidance_Proximity_AVOID_ALT_MIN,
+            self.SetpointGlobalPos,
+            self.TakeoffCheck,
+            self.MaxAltFenceAvoid,
+            self.GPSGlitchLoiter2,
+            self.SuperSimpleCircle,
+            self.MagFail,
+            self.LoiterNoCompassYaw,
+            self.CopterMission,
+            self.TakeoffAlt,
+            self.AutoYawDO_MOUNT_CONTROL,
+            self.ParameterChecks,
+            self.ModeFollow_with_FOLLOW_TARGET,
+            self.MAVLinkRangeFinderIDs,
+            self.MAV_CMD_NAV_LOITER_UNLIM,
+            self.FenceRelativePreArms,
+            self.mission_NAV_LOITER_TURNS_off_center,
+            self.GyroFFTPostFilter,
+            self.EK3_NoGPSLeakWhenNotSource,
+            self.AHRSSwitchBackendYawReset,
+            self.SMART_RTL,
+            self.ScriptParamRegistration,
+            self.PerfInfo,
+            self.FETtecESC,
+            self.DO_CHANGE_SPEED,
+            self.GPSForYaw,
+            self.GPSForYawWindEstimation,
+            self.GPSForYawCompassFallback,
+            self.Sprayer,
+            self.CircleManualControlEntryLeft,
+            self.LuaCopterCircleSpeed,
+            self.MountViewPro,
+            self.AHRSTrimLand,
+            self.IBus,
+            self.REQUIRE_LOCATION_FOR_ARMING,
+            self.MissionRTLYawBehaviour,
+            self.MAV_CMD_MISSION_START_p1_p2,
+            self.ScriptingFlipMode,
+            self.UTMGlobalPosition,
         ])
         return ret
 
     def tests1e(self):
         '''return list of all tests'''
         ret = ([
-             self.BeaconPosition,
-             self.RTLSpeed,
-             self.Mount,
-             self.MountYawVehicleForMountROI,
-             self.MAV_CMD_DO_MOUNT_CONTROL,
-             self.MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE,
-             self.AutoYawDO_MOUNT_CONTROL,
-             self.MountPOIFromAuxFunction,
-             self.MAV_CMD_DO_SET_ROI_WPNEXT_OFFSET,
-             self.Button,
-             self.ShipTakeoff,
-             self.RangeFinder,
-             self.BaroDrivers,
-             self.SurfaceTracking,
-             self.SurfaceTracking2,
-             self.SurfaceTrackingCornerCases,
-             self.Parachute,
-             self.ParameterChecks,
-             self.ManualThrottleModeChange,
-             self.MANUAL_CONTROL,
-             self.ModeZigZag,
-             self.PosHoldTakeOff,
-             self.PosHoldDesiredAttitudeMonotonic,
-             self.ModeFollow,
-             self.ModeFollow_with_FOLLOW_TARGET,
-             self.RangeFinderDrivers,
-             self.MAVLinkRangeFinderIDs,
-             self.FlyRangeFinderMAVlink,
-             self.FlyRangeFinderSITL,
-             self.RangeFinderDriversMaxAlt_LightwareSerial,
-             self.RangeFinderDriversMaxAlt_AinsteinLRD1,
-             self.RangeFinderDriversMaxAlt_AinsteinLRD1_v19,
-             self.RangeFinderDriversLongRange,
-             self.RangeFinderSITLLongRange,
-             self.RangeFinderPowerDown,
-             self.MaxBotixI2CXL,
-             self.MAVProximity,
-             self.ParameterValidation,
-             self.AltTypes,
-             self.PAUSE_CONTINUE,
-             self.PAUSE_CONTINUE_GUIDED,
-             self.RichenPower,
-             self.IE24,
-             self.LoweheiserAuto,
-             self.LoweheiserManual,
-             self.MAVLandedStateTakeoff,
-             self.Weathervane,
-             self.MAV_CMD_AIRFRAME_CONFIGURATION,
-             self.MAV_CMD_NAV_LOITER_UNLIM,
-             self.MAV_CMD_NAV_RETURN_TO_LAUNCH,
-             self.MAV_CMD_NAV_VTOL_LAND,
-             self.clear_roi,
-             self.ReadOnlyDefaults,
-             self.DefaultsCommaList,
-             self.FenceRelativePreArms,
-             self.FenceRelativeToHomeMaxAlt,
-             self.FenceRelativeToHomeMinAlt,
-             self.FenceRelativeToHomeMaxAltOriginAbove,
-             self.FenceRelativeToHomeMinAltOriginAbove,
-             self.FenceRelativeToHomeCliff,
-             self.FenceRelativeToOriginMaxAlt,
-             self.FenceRelativeToOriginMinAlt,
-             self.FenceRelativeToOriginMaxAltHomeAbove,
-             self.FenceRelativeToOriginMinAltHomeAbove,
-             self.FenceRelativeToAMSLMaxAlt,
-             self.FenceRelativeToAMSLMinAlt,
-             self.FenceRelativeToAMSLCliff,
-             self.FenceRelativeToTerrainMaxAlt,
-             self.FenceRelativeToTerrainMinAlt,
+            self.NoRCOnBootPreArmFailure,
+            self.BatteryFailsafeOptionsContinueLanding,
+            self.EK3AccelBias,
+            self.EK3_OptflowTerrainScaleHeight,
+            self.EK3_AccelBiasZeroVelOptFlow,
+            self.ThrowDoubleDrop,
+            self.HorizontalFence,
+            self.MaxAltFence,
+            self.ModeAltHold,
+            self.OpticalFlow,
+            self.OpticalFlowLimits,
+            self.BodyFrameOdom,
+            self.RTLSpeed,
+            self.MountYawVehicleForMountROI,
+            self.MAV_CMD_DO_MOUNT_CONTROL,
+            self.SurfaceTrackingCornerCases,
+            self.ManualThrottleModeChange,
+            self.ModeZigZag,
+            self.ModeFollow,
+            self.RangeFinderDrivers,
+            self.RichenPower,
+            self.MAV_CMD_NAV_VTOL_LAND,
+            self.FenceRelativeToHomeMinAltOriginAbove,
+            self.FenceRelativeToOriginMaxAltHomeAbove,
+            self.FenceRelativeToTerrainMaxAlt,
+            self.FenceRelativeToTerrainMinAlt,
+            self.RefindGPS,
+            self.EK3SrcSwitchPosDownReset,
+            self.AP_Avoidance,
+            self.GPSBlending,
+            self.GPSWeightedBlending,
+            self.DataFlashErase,
+            self.WP_SPEED,
+            self.DeadReckoningInWind,
+            self.ScriptCopterPosOffsets,
+            self.MountSiyiZT30,
+            self.CircleSpeed,
+            self.ArmSwitchAfterReboot,
+            self.MAV_CMD_DO_FLIGHTTERMINATION,
+            self.MAV_CMD_SET_EKF_SOURCE_SET,
+            self.MAV_CMD_NAV_TAKEOFF,
+            self.MAV_CMD_NAV_TAKEOFF_command_int,
+            self.Ch6TuningWPSpeed,
+            self.Clamp,
+            self.ScriptingFlyVelocity,
+            self.PLDNoParameters,
         ])
         return ret
 
@@ -19076,13 +19298,59 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             # something about SITLCompassCalibration appears to fail
             # this one, so we put it first:
             self.FixedYawCalibration,
-
             # we run this single 8min-and-40s test on its own, apart
             #   from requiring FixedYawCalibration right before it
             #   because without it, it fails to calibrate this
             #   autotest appears to interfere with
             #   FixedYawCalibration, no idea why.
             self.SITLCompassCalibration,
+            self.NavDelayAbsTime,
+            self.Landing,
+            self.PrecisionLanding,
+            self.AutoTune,
+            self.AutoTuneYawD,
+            self.ThrowMode,
+            self.RecordThenPlayMission,
+            self.BatteryFailsafeDisabled,
+            self.BatteryFailsafeDisabledOnGround,
+            self.BatteryFailsafeTwoStageSmartRTL,
+            self.BatteryFailsafeCriticalLanding,
+            self.GuidedRejectOutsideFence,
+            self.AutoTuneAux,
+            self.ModeCircle,
+            self.LoiterNoCompassYawGPS,
+            self.FlowGyroZBiasNoYawReference,
+            self.FlowAidingRestartsWithoutYawFusion,
+            self.VisionPosition,
+            self.Mount,
+            self.MountPOIFromAuxFunction,
+            self.MaxBotixI2CXL,
+            self.FenceRelativeToOriginMinAltHomeAbove,
+            self.FenceRelativeToAMSLMaxAlt,
+            self.MotorTest,
+            self.EKFSource,
+            self.AHRSSwitchBackendPositionReset,
+            self.EKFYawResetLogged,
+            self.RTLYaw,
+            self.DataFlash,
+            self.Callisto,
+            self.ModeAllowsEntryWhenNoPilotInput,
+            self.WP_SPEED_UP,
+            self.DO_WINCH,
+            self.DefaultIntervalsFromFiles,
+            self.RCOverridesNoRCReceiver,
+            self.RCOverridesClearByPilotInput,
+            self.ScriptMountDriver,
+            self.CircleManualControlEntryRight,
+            self.MissionIndexValidity,
+            self.RPLidarA2,
+            self.MAV_CMD_NAV_TAKEOFF_no_location,
+            self.DualTuningChannels,
+            self.AutoRTL,
+            self.GripperReleaseOnThrustLoss,
+            self.ScriptingAHRSSource,
+            self.CompassLearnCopyFromSIM,
+            self.IgnorePilotYaw,
         ])
         return ret
 
@@ -20103,6 +20371,14 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.wait_ready_to_arm()
 
         self.arm_vehicle()
+
+        self.start_subtest("NAV_VTOL_TAKEOFF must be rejected via COMMAND_LONG")
+        self.run_cmd(
+            mavutil.mavlink.MAV_CMD_NAV_VTOL_TAKEOFF,
+            p7=5,
+            want_result=mavutil.mavlink.MAV_RESULT_COMMAND_INT_ONLY,
+        )
+
         self.run_cmd(mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, p7=5)
         self.wait_altitude(4.5, 5.5, minimum_duration=5, relative=True)
         self.change_mode('LAND')
@@ -20174,6 +20450,24 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.wait_disarmed()
 
         self.reboot_sitl()  # unlock home position
+
+        self.start_subtest("NAV_VTOL_TAKEOFF via COMMAND_INT")
+        self.change_mode('GUIDED')
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.run_cmd_int(
+            mavutil.mavlink.MAV_CMD_NAV_VTOL_TAKEOFF,
+            p7=takeoff_alt,
+            frame=mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT,
+        )
+        self.wait_altitude(
+            takeoff_alt - 0.5,
+            takeoff_alt + 0.5,
+            minimum_duration=5,
+            relative=True,
+        )
+        self.change_mode('LAND')
+        self.wait_disarmed()
 
     def Ch6TuningWPSpeed(self):
         '''test waypoint speed can be changed via Ch6 tuning knob'''
@@ -22460,6 +22754,63 @@ RTL_ALT_M 111
 
         self.do_RTL()
 
+    def LuaMAVLinkTarget(self):
+        """Lua sends legacy, broadcast and full-width targets without mutating payloads."""
+        self.set_parameter('SCR_ENABLE', 1)
+        self.install_mavlink_module_context('MAVLink')
+        self.install_script_content_context('mavlink-target.lua', """
+local msgs = require('MAVLink/mavlink_msgs')
+mavlink:init(4, 1)
+mavlink:register_rx_msgid(76)
+mavlink:block_command(31000)
+local targets = {false, false, 0, 7, 255, 256, 70000, 0x7fffffff,
+                 0x80000000, 0xffffffff, uint32_t(0xffffffff), 256}
+local function update()
+    local raw, chan = mavlink:receive_chan()
+    if raw then
+        local msg = msgs.decode(raw, {[76]='COMMAND_LONG'})
+        if msg and msg.command == 31000 then
+            local case = math.floor(msg.param1)
+            local payload = string.pack('<HBBi4BB', 31000, 0, 0, case, 99, 190)
+            if case == 12 then payload = payload:sub(1, 8) end
+            local saved = payload
+            -- Messages without a target field cannot use this override.
+            assert(not pcall(mavlink.send_chan, mavlink, chan, 0, string.rep('x', 9), 256))
+            local sent
+            if case == 1 then
+                sent = mavlink:send_chan(chan, 77, payload)
+            elseif case == 2 then
+                sent = mavlink:send_chan(chan, 77, payload, nil)
+            else
+                sent = mavlink:send_chan(chan, 77, payload, targets[case])
+            end
+            assert(sent and payload == saved)
+        end
+    end
+    return update, 20
+end
+return update()
+""")
+        self.reboot_sitl()
+        self.wait_ready_to_arm()
+        targets = (99, 99, 0, 7, 255, 256, 70000, 0x7FFFFFFF,
+                   0x80000000, 0xFFFFFFFF, 0xFFFFFFFF, 256)
+        for case, target in enumerate(targets, 1):
+            self.start_subtest("Lua target case %u: %u" % (case, target))
+            self.mav.mav.command_long_send(self.sysid_thismav(), 1, 31000, 0, case, 0, 0, 0, 0, 0, 0)
+            reply = self.assert_received_message_field_values('COMMAND_ACK', {
+                'command': 31000,
+                'result': mavutil.mavlink.MAV_RESULT_ACCEPTED,
+                'result_param2': case,
+                'target_system': target,
+                'target_component': 0 if case == 12 else 190,
+            })
+            wide = target > 255
+            if bool(reply.get_header().incompat_flags & mavutil.mavlink.MAVLINK_IFLAG_TARGET32) != wide:
+                raise NotAchievedException("Incorrect Lua target header")
+            if reply.get_payload().ljust(10, b'\0')[8] != (255 if wide else target):
+                raise NotAchievedException("Incorrect Lua payload target")
+
     def LuaParamLockdown(self):
         '''test param-lockdown.lua applet'''
         self.set_parameters({
@@ -22468,6 +22819,7 @@ RTL_ALT_M 111
 
         self.context_push()
 
+        self.install_mavlink_module_context("MAVLink")
         self.install_applet_script_context("param-lockdown.lua")
         self.reboot_sitl()
 
@@ -22508,6 +22860,28 @@ RTL_ALT_M 111
         }, check_context=True, very_verbose=True)
         self.assert_parameter_value('DISARM_DELAY', old_disarm_delay_value)
         self.context_pop()
+
+        original_source = self.mav.mav.srcSystem
+        try:
+            for source in (255, 256, 70000, 0x80000000, 0xFFFFFFFF):
+                self.start_subtest("PARAM_ERROR reply to source %u" % source)
+                self.context_push()
+                self.context_collect('PARAM_ERROR')
+                self.mav.mav.srcSystem = source
+                self.send_set_parameter_direct('DISARM_DELAY', 78)
+                reply = self.assert_received_message_field_values('PARAM_ERROR', {
+                    "target_system": source,
+                    "target_component": 250,
+                    "param_id": 'DISARM_DELAY',
+                    "param_index": -1,
+                    "error": mavutil.mavlink.MAV_PARAM_ERROR_PERMISSION_DENIED,
+                }, check_context=True)
+                if bool(reply.get_header().incompat_flags & mavutil.mavlink.MAVLINK_IFLAG_TARGET32) != (source > 255):
+                    raise NotAchievedException("Incorrect PARAM_ERROR target header")
+                self.assert_parameter_value('DISARM_DELAY', old_disarm_delay_value)
+                self.context_pop()
+        finally:
+            self.mav.mav.srcSystem = original_source
 
         self.start_subtest("Disabling applet via parameter should allow freely setting DISARM_DELAY")
         self.set_parameter("PARAM_LOCK_ENAB", 0)
@@ -22705,6 +23079,7 @@ RTL_ALT_M 111
             [],
             **self.callisto_sitl_kwargs()
         )
+        self.install_mavlink_module_context("MAVLink")
         self.install_example_script_context("config_profiles.lua")
         self.set_parameters({
             'SCR_ENABLE': 1,
@@ -22986,218 +23361,181 @@ return update, 1000
             if pname in all_params:
                 raise ValueError(f"{pname} in fetched-all-parameters when it should have gone away")
 
-    def tests2b(self):  # this block currently around 9.5mins here
+    def tests2b(self):
         '''return list of all tests'''
         ret = ([
+            self.ThrottleFailsafe,
+            self.CustomController,
+            self.WPArcs,
+            self.BatteryFailsafeTwoStage,
+            self.BatteryFailsafeBrakeLand,
+            self.MinAltFenceAvoid,
+            self.FenceFloorEnabledLanding,
+            self.FenceUpload_MissionItem,
+            self.GPSGlitchLoiter,
+            self.AirModeStabZeroThrottle,
+            self.SimpleMode,
+            self.LoiterFlowBrakeOvershoot,
+            self.Gripper,
+            self.BaseLoggingRates,
+            self.GPSViconSwitching,
+            self.Button,
+            self.Parachute,
+            self.MANUAL_CONTROL,
+            self.PosHoldDesiredAttitudeMonotonic,
+            self.RangeFinderDriversMaxAlt_LightwareSerial,
+            self.RangeFinderPowerDown,
+            self.PAUSE_CONTINUE,
+            self.MAV_CMD_AIRFRAME_CONFIGURATION,
+            self.DefaultsCommaList,
+            self.FenceRelativeToHomeMinAlt,
+            self.FenceRelativeToAMSLMinAlt,
             self.MotorVibration,
             Test(self.DynamicNotches, attempts=4),
-            self.PositionWhenGPSIsZero,
-            self.DynamicRpmNotches, # Do not add attempts to this - failure is sign of a bug
-            self.DynamicRpmNotchesRateThread,
-            self.PIDNotches,
-            self.mission_NAV_LOITER_TURNS,
-            self.mission_NAV_LOITER_TURNS_off_center,
-            self.mission_NAV_LOITER_TURNS_speed,
-            self.mission_NAV_LOITER_TURNS_zero_radius,
-            self.mission_NAV_LOITER_TURNS_direction,
             self.StaticNotches,
-            self.LuaParamLockdown,
-            self.RefindGPS,
-            Test(self.GyroFFT, attempts=1, speedup=8),
-            Test(self.GyroFFTHarmonic, attempts=4, speedup=8),
-            Test(self.GyroFFTAverage, attempts=1, speedup=8),
             Test(self.GyroFFTContinuousAveraging, attempts=4, speedup=8),
-            self.WPYawBehaviour1RTL,
-            self.GyroFFTPostFilter,
             self.GyroFFTMotorNoiseCheck,
-            self.CompassReordering,
-            self.SixCompassCalibrationAndReordering,
-            self.CRSF,
             self.MSPVTXConfig,
             self.MSPDisplayPortVTXConfig,
-            self.MotorTest,
-            self.AltEstimation,
-            self.EK3_NoGPSLeakWhenNotSource,
-            self.EKFSource,
-            self.GSF,
-            self.GSF_reset,
             self.EKFBootstrapReset,
-            self.AHRSSwitchBackendPositionReset,
-            self.AHRSSwitchBackendPositionNEReset,
-            self.AHRSSwitchBackendYawReset,
-            self.EK3SrcSwitchPosDownReset,
-            self.SIMCompare,
-            self.EKFYawResetLogged,
-            self.AP_Avoidance,
             self.RTL_ALT_FINAL_M,
             self.MissionRTLAltFinalContinue,
-            self.SMART_RTL,
-            self.MAV_CMD_DO_SET_HOME_bad_location,
             self.SMART_RTL_EnterLeave,
             self.SMART_RTL_Repeat,
             self.RTL_TO_RALLY,
-            self.RTLYaw,
-            self.FlyEachFrame,
-            self.ScriptParamRegistration,
-            self.GPSBlending,
-            self.GPSWeightedBlending,
-            self.GPSBlendingLog,
-            self.GPSBlendingAffinity,
-            self.DataFlash,
-            self.DataFlashErase,
-            self.Callisto,
-            self.PerfInfo,
-            self.ModeAllowsEntryWhenNoPilotInput,
             self.Replay,
-            self.FETtecESC,
-            self.ProximitySensors,
             self.GroundEffectCompensation_touchDownExpected,
             self.GroundEffectCompensation_takeOffExpected,
-            self.DO_CHANGE_SPEED,
-            self.MISSION_START,
-            self.AUTO_LAND_TO_BRAKE,
-            self.WP_SPEED,
             self.RTLStoppingDistanceSpeed,
-            self.WP_SPEED_UP,
             self.WP_SPEED_DN,
-            self.DO_WINCH,
-            self.SensorErrorFlags,
-            self.DeadReckoningInWind,
-            self.GPSForYaw,
-            self.GPSForYawWindEstimation,
-            self.GPS_INPUT,
-            self.GPSForYawAttitudeCorrection,
-            self.GPSForYawVerticalBaseline,
-            self.GPSForYawCompassFallback,
-            self.DefaultIntervalsFromFiles,
             self.GPSTypes,
             self.MultipleGPS,
-            self.WatchAlts,
             self.GuidedEKFLaneChange,
-            self.Sprayer,
-            self.AutoContinueOnRCFailsafe,
-            self.EK3_RNG_USE_HGT,
-            self.NoRC,
-            self.RCOverridesNoRCReceiver,
-            self.RCOverridesClearByPilotInput,
             self.TerrainDBPreArm,
-            self.ThrottleGainBoost,
-            self.ScriptMountPOI,
-            self.ScriptMountAllModes,
-            self.ScriptMountDriver,
-            self.ScriptCopterPosOffsets,
-            self.MountSolo,
-            self.MountSiyiZT30,
-            self.CircleSpeed,
-            self.CircleManualControlEntryLeft,
-            self.CircleManualControlEntryRight,
-            self.LuaCopterCircleSpeed,
-            self.TakeoffWithLocation,
-            self.MountTopotek,
             self.MountTopotekNetwork,
-            self.MountViewPro,
-            self.MountAVTCM62,
-            self.MountMAVLinkROI,
-            self.MountMAVLinkTargetRefresh,
-            self.MAVLinkCameraCaptureStatus,
-            self.MAVLinkUnicast,
-            self.MAVLinkCameraRelay,
-            self.MAVLinkCameraSelectors,
-            self.MAVLinkCameraComponentIDs,
-            self.MAVLinkCameraMixed,
-            self.MAVLinkCameraStreams,
-            self.MT11MAVFTP,
-            self.MountMT11,
-            self.MountMT11Telemetry,
             self.MountAVTCM62Dual,
             self.MountAVTCM62DualMission,
             self.MountAVTCM62DualImageStartCapture,
-            self.MountRCFailAngle,
-            self.MountRCFailRate,
+            self.CameraServoZoomFocusSpeed,
             self.FlyMissionTwice,
             self.FlyMissionTwiceWithReset,
-            self.MissionIndexValidity,
-            self.InvalidJumpTags,
-            self.IMUConsistency,
-            self.AHRSTrimLand,
-            self.IBus,
-            self.WaitAndMaintainAttitude_RCFlight,
-            self.GuidedYawRate,
-            self.RudderDisarmMidair,
-            self.NoArmWithoutMissionItems,
-            self.DO_CHANGE_SPEED_in_guided,
-            self.ArmSwitchAfterReboot,
-            self.RPLidarA1,
-            self.RPLidarA2,
-            self.MISSION_OPTION_CLEAR_MISSION_AT_BOOT,
-            self.SafetySwitch,
-            self.RCProtocolFailsafe,
             self.BrakeZ,
-            self.MAV_CMD_DO_FLIGHTTERMINATION,
-            self.MAV_CMD_DO_LAND_START,
-            self.MAV_CMD_DO_SET_GLOBAL_ORIGIN,
-            self.MAV_CMD_SET_EKF_SOURCE_SET,
-            self.MAV_CMD_NAV_TAKEOFF_no_location,
-            self.HomeCircleInclusionFence,
-            self.HomeCircleInclusionFence_SetHome,
-            self.HomeCircleInclusionFence_MultipleHomeCircle,
-            self.HomeCircleInclusionFence_Avoidance,
-            self.HomeCircleInclusionFence_Avoidance_SetHome,
-            self.MAV_CMD_NAV_TAKEOFF,
-            self.MAV_CMD_NAV_TAKEOFF_command_int,
-            self.Ch6TuningWPSpeed,
-            self.DualTuningChannels,
-            self.PILOT_THR_BHV,
-            self.GPSForYawCompassLearn,
-            self.CameraLogMessages,
+            self.COMMAND_LONG_positional_command_int_only,
             self.LoiterToGuidedHomeVSOrigin,
             self.GuidedModeThrust,
             self.CompassMot,
-            self.AutoRTL,
-            self.EK3_OGN_HGT_MASK_climbing,
-            self.EK3_OGN_HGT_MASK,
             self.FarOrigin,
             self.GuidedForceArm,
-            self.GuidedWeatherVane,
-            self.LUAConfigProfile,
-            self.Clamp,
-            self.GripperReleaseOnThrustLoss,
-            self.GripperInitialPosition,
-            self.REQUIRE_LOCATION_FOR_ARMING,
-            self.LoggingFormat,
-            self.MissionRTLYawBehaviour,
-            self.BatteryInternalUseOnly,
-            self.MAV_CMD_MISSION_START_p1_p2,
-            self.ScriptingAHRSSource,
-            self.FTPScriptUpload,
-            self.CommonOrigin,
-            self.CommonOriginExternalAHRS,
-            self.CommonOriginExternalAHRSReceives,
-            self.AHRSExternalNoAttitudeAirspeedIndex,
             self.AHRSOriginRecorded,
-            self.TestTetherStuck,
-            self.ScriptingFlipMode,
-            self.RC_OPTIONS_1_FS_THR_ENABLE_0,
-            self.ScriptingFlyVelocity,
-            self.Scripting6DoFMotors,
             self.ScriptingOSD,
-            self.EK3_EXT_NAV_vel_without_vert,
+            self.TestEKF3CompassFailover,
+            self.EKF3SRCPerCore,
+        ])
+        return ret
+
+    def tests2c(self):
+        '''return list of all tests'''
+        ret = ([
+            self.GuidedSubModeChange,
+            self.PayloadPlaceMission,
+            self.TerrainFailsafe,
+            self.BatteryFailsafeTerminate,
+            self.GainBackoffTakeoff,
+            self.MinAltFence,
+            self.FenceFloorAutoDisableLanding,
+            self.FenceMargin,
+            self.GPSGlitchAuto,
+            self.MotorFail,
+            self.ModeFlip,
+            self.MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE,
+            self.RangeFinderDriversLongRange,
+            self.RangeFinderSITLLongRange,
+            self.PAUSE_CONTINUE_GUIDED,
+            self.LoweheiserManual,
+            self.Weathervane,
+            self.ReadOnlyDefaults,
+            self.FenceRelativeToOriginMaxAlt,
+            self.FenceRelativeToOriginMinAlt,
+            self.mission_NAV_LOITER_TURNS_direction,
+            self.LuaMAVLinkTarget,
+            self.LuaParamLockdown,
+            Test(self.GyroFFTHarmonic, attempts=4, speedup=8),
+            Test(self.GyroFFTAverage, attempts=1, speedup=8),
+            self.CRSF,
+            self.GSF,
+            self.SIMCompare,
+            self.WatchAlts,
+            self.TakeoffWithLocation,
+            self.MountRCFailAngle,
+            self.MountRCFailRate,
+            self.InvalidJumpTags,
+            self.RudderDisarmMidair,
+            self.NoArmWithoutMissionItems,
+            self.DO_CHANGE_SPEED_in_guided,
+            self.RPLidarA1,
+            self.RCProtocolFailsafe,
+            self.MAV_CMD_DO_LAND_START,
+            self.CameraLogMessages,
+            self.EK3_OGN_HGT_MASK_climbing,
+            self.LUAConfigProfile,
+            self.GripperInitialPosition,
+            self.FTPScriptUpload,
+            self.Scripting6DoFMotors,
             self.CompassLearnCopyFromEKF,
-            self.DroneCANCompass,
+            self.Ch6TuningLoitMaxXYSpeed,
+        ])
+        return ret
+
+    def tests2d(self):
+        '''return list of all tests'''
+        ret = ([
+            self.LoiterToAlt,
+            self.PayloadPlaceMissionOpenGripper,
+            self.PrecisionLoiterCompanion,
+            self.BackupFence,
+            self.CorrectedDeltaVelocity,
+            self.TakeoffGroundEffectAlt,
+            self.BaroGroundEffectRangefinderSwitch,
+            self.TouchdownGroundEffectAlt,
+            self.AvoidanceAltFence,
+            self.FenceAltFrameComparison,
+            self.FenceFloorAutoEnableOnArming,
+            self.AutoTuneSwitch,
+            self.GPSFixTypes,
+            self.AirModeLanding,
+            self.TestLocalHomePosition,
+            self.TestGripperMission,
+            self.ShipTakeoff,
+            self.RangeFinder,
+            self.BaroDrivers,
+            self.MAVProximity,
+            self.LoweheiserAuto,
+            self.clear_roi,
+            self.FenceRelativeToAMSLCliff,
+            self.PositionWhenGPSIsZero,
+            self.mission_NAV_LOITER_TURNS,
+            self.mission_NAV_LOITER_TURNS_speed,
+            Test(self.GyroFFT, attempts=1, speedup=8),
+            self.CompassReordering,
+            self.GSF_reset,
+            self.MAV_CMD_DO_SET_HOME_bad_location,
+            self.SensorErrorFlags,
+            self.GPSForYawVerticalBaseline,
+            self.AutoContinueOnRCFailsafe,
+            self.MountSolo,
+            self.MAV_CMD_DO_SET_GLOBAL_ORIGIN,
+            self.HomeCircleInclusionFence,
+            self.PILOT_THR_BHV,
+            self.GPSForYawCompassLearn,
+            self.EK3_OGN_HGT_MASK,
+            self.GuidedWeatherVane,
+            self.LoggingFormat,
+            self.CommonOrigin,
+            self.RC_OPTIONS_1_FS_THR_ENABLE_0,
             self.CompassLearnCopyFromEKFAffinity,
-            self.CompassLearnCopyFromSIM,
             self.AHRSAutoTrim,
             self.AHRSTrim,
-            self.Ch6TuningLoitMaxXYSpeed,
-            self.IgnorePilotYaw,
-            self.TestEKF3CompassFailover,
-            self.test_EKF3_option_disable_lane_switch,
-            self.PLDNoParameters,
             self.PeriphMultiUARTTunnel,
-            self.EKF3SRCPerCore,
-            self.UTMGlobalPosition,
-            self.UTMGlobalPositionWaypoint,
-            self.HomeAltResetTest,
         ])
         return ret
 
@@ -23433,6 +23771,8 @@ return update, 1000
         ret.extend(self.tests1e())
         ret.extend(self.tests2a())
         ret.extend(self.tests2b())
+        ret.extend(self.tests2c())
+        ret.extend(self.tests2d())
         return ret
 
     def disabled_tests(self):
@@ -23480,6 +23820,16 @@ class AutoTestCopterTests2a(AutoTestCopter):
 class AutoTestCopterTests2b(AutoTestCopter):
     def tests(self):
         return self.tests2b()
+
+
+class AutoTestCopterTests2c(AutoTestCopter):
+    def tests(self):
+        return self.tests2c()
+
+
+class AutoTestCopterTests2d(AutoTestCopter):
+    def tests(self):
+        return self.tests2d()
 
 
 class AutoTestCAN(AutoTestCopter):

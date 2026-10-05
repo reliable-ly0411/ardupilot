@@ -310,6 +310,7 @@ class TestBuildOptions(object):
             feature_define_whitelist.add('AP_TEMPCALIBRATION_ENABLED')
             feature_define_whitelist.add('AC_PAYLOAD_PLACE_ENABLED')
             feature_define_whitelist.add('AP_AVOIDANCE_ENABLED')
+            feature_define_whitelist.add('AP_GROUNDEFFECT_ENABLED')
             feature_define_whitelist.add('AP_WINCH_ENABLED')
             feature_define_whitelist.add('AP_WINCH_DAIWA_ENABLED')
             feature_define_whitelist.add('AP_WINCH_PWM_ENABLED')
@@ -347,6 +348,7 @@ class TestBuildOptions(object):
             feature_define_whitelist.add('AP_PLANE_GLIDER_PULLUP_ENABLED')
             feature_define_whitelist.add('AP_QUICKTUNE_ENABLED')
             feature_define_whitelist.add('AP_PLANE_SYSTEMID_ENABLED')
+            feature_define_whitelist.add('AP_PLANE_CUSTOMCONTROL_ENABLED')
 
         if target.lower() not in ["plane", "copter"]:
             feature_define_whitelist.add('HAL_ADSB_ENABLED')

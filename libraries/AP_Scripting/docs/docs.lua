@@ -1156,6 +1156,19 @@ function Location_ud:change_alt_frame(desired_frame) end
 ---| '3' # ABOVE_TERRAIN
 function Location_ud:set_alt_m(alt, frame) end
 
+-- get altitude (in metres) in the desired frame. Returns nil on failure, which can only
+-- happen if the original frame or desired frame is:
+-- - above-terrain and the terrain database can't supply terrain height amsl
+-- - above-home and home is not set
+-- - above-origin and origin is not set
+---@param frame integer -- altitude frame
+---| '0' # ABSOLUTE
+---| '1' # ABOVE_HOME
+---| '2' # ABOVE_ORIGIN
+---| '3' # ABOVE_TERRAIN
+---@return number|nil -- altitude in specified frame
+function Location_ud:get_alt_m(frame) end
+
 -- Given a Location this calculates the north and east distance between the two locations in meters.
 ---@param loc Location_ud -- location to compare with
 ---@return Vector2f_ud -- North east distance vector in meters
@@ -4090,12 +4103,16 @@ function mavlink:register_rx_msgid(msg_id) end
 function mavlink:receive_chan() end
 
 -- sends mavlink message, to use this function the call should be like this:
--- mavlink:send(chan, mavlink_msgs.encode("MSG_NAME", {param1 = value1, param2 = value2, ...}})
+-- mavlink:send_chan(chan, mavlink_msgs.encode("MSG_NAME", {param1 = value1, param2 = value2, ...}))
+-- To override the target, first capture both encode() results, then pass the target:
+-- local msgid, payload = mavlink_msgs.encode("MSG_NAME", message)
+-- mavlink:send_chan(chan, msgid, payload, target_system)
 ---@param chan integer
 ---@param msgid integer
 ---@param message string
+---@param target_system? uint32_t_ud|integer -- overrides the payload target and supplies the wide header; requires a target-system field. Signed Lua integers preserve their uint32 bit pattern.
 ---@return boolean|nil -- True if send was successful, false if send was not successful, nil if channel does not exist
-function mavlink:send_chan(chan, msgid, message) end
+function mavlink:send_chan(chan, msgid, message, target_system) end
 
 -- Block a given MAV_CMD from being processed by ArduPilot
 ---@param comand_id integer
