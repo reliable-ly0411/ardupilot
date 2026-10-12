@@ -41,6 +41,9 @@ class Feature:
 # dependencies  : Comma-separated list of feature labels that this feature depends on
 #                 (a single string with commas and no spaces). e.g., 'dependency1,dependency2'.
 BUILD_OPTIONS = [
+    Feature('Other', 'USB debug startup wait', 'AP_USB_DEBUG_STARTUP_WAIT_ENABLED',
+            'Wait for USB GDB before vehicle setup', 0, 'USB debug'),
+    Feature('Other', 'USB debug', 'AP_USB_DEBUG_ENABLED', 'Enable STM32H7 USB GDB debugging', 0, None),
     Feature('AHRS', 'EKF3', 'HAL_NAVEKF3_AVAILABLE', 'Enable EKF3', 1, None),
     Feature('AHRS', 'EKF2', 'HAL_NAVEKF2_AVAILABLE', 'Enable EKF2', 0, None),
     Feature('AHRS', 'AHRS_EXT', 'AP_EXTERNAL_AHRS_ENABLED', 'Enable External AHRS', 0, None),
@@ -215,6 +218,7 @@ BUILD_OPTIONS = [
 
     Feature('Compass', 'AF9838', 'AP_COMPASS_AF9838_ENABLED', 'Enable AF9838 compasses', 1, None),
     Feature('Compass', 'AK09916', 'AP_COMPASS_AK09916_ENABLED', 'Enable AK0991x compasses', 1, None),
+    Feature('Compass', 'AK09940A', 'AP_COMPASS_AK09940A_ENABLED', 'Enable AK09940A compasses', 1, None),
     Feature('Compass', 'AK8963', 'AP_COMPASS_AK8963_ENABLED', 'Enable AK8963 compasses', 1, None),
     Feature('Compass', 'BMM150', 'AP_COMPASS_BMM150_ENABLED', 'Enable BMM150 compasses', 1, None),
     Feature('Compass', 'BMM350', 'AP_COMPASS_BMM350_ENABLED', 'Enable BMM350 compasses', 1, None),

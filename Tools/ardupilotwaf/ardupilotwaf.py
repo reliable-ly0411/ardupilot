@@ -274,7 +274,11 @@ def ap_get_all_libraries(bld):
 
 @conf
 def ap_common_vehicle_libraries(bld):
-    libraries = COMMON_VEHICLE_DEPENDENT_LIBRARIES
+    '''
+    return the libraries every vehicle uses, plus the CAN ones when the
+    board has CAN. The list is a copy, so callers can extend it.
+    '''
+    libraries = list(COMMON_VEHICLE_DEPENDENT_LIBRARIES)
 
     if bld.env.with_can or bld.env.HAL_NUM_CAN_IFACES:
         libraries.extend(COMMON_VEHICLE_DEPENDENT_CAN_LIBRARIES)
@@ -308,7 +312,6 @@ class upload_fw_blueos(Task.Task):
 
 class check_elf_symbols(Task.Task):
     color='CYAN'
-    always_run = True
     def keyword(self):
         return "checking symbols"
 
@@ -341,15 +344,12 @@ class check_elf_symbols(Task.Task):
             if nmout.find(b) != -1:
                 raise Errors.WafError("Disallowed symbol in %s: %s" % (elfpath, b))
 
-
 @feature('post_link')
 @after_method('process_source')
 def post_link(self):
     '''
     setup tasks to run after link stage
     '''
-    self.link_task.always_run = True
-
     link_output = self.link_task.outputs[0]
 
     check_elf_task = self.create_task('check_elf_symbols', src=link_output)
@@ -478,8 +478,8 @@ def ap_find_tests(bld, use=[], DOUBLE_PRECISION_SOURCES=[]):
     if bld.cmd == 'check':
         features.append('test')
 
-    use = Utils.to_list(use)
-    use.append('GTEST')
+    tests_use = list(Utils.to_list(use))  # copy: don't modify the caller's list
+    tests_use.append('GTEST')
 
     includes = [bld.srcnode.abspath() + '/tests/']
 
@@ -489,7 +489,7 @@ def ap_find_tests(bld, use=[], DOUBLE_PRECISION_SOURCES=[]):
             features=features,
             includes=includes,
             source=[f],
-            use=use,
+            use=tests_use,
             program_name=f.change_ext('').name,
             program_groups='tests',
             use_legacy_defines=False,
@@ -543,16 +543,9 @@ def ap_find_benchmarks(bld, use=[]):
 
     includes = [bld.srcnode.abspath() + '/benchmarks/']
     to_remove = '-Werror=suggest-override'
-    if to_remove in bld.env.CXXFLAGS:
-        need_remove = True
-    else:
-        need_remove = False
-    if need_remove:
-        while to_remove in bld.env.CXXFLAGS:
-            bld.env.CXXFLAGS.remove(to_remove)
 
     for f in bld.path.ant_glob(incl='*.cpp'):
-        ap_program(
+        t = ap_program(
             bld,
             features=['gbenchmark'],
             includes=includes,
@@ -563,6 +556,8 @@ def ap_find_benchmarks(bld, use=[]):
             program_groups='benchmarks',
             use_legacy_defines=False,
         )
+        # only the benchmark sources include the gbenchmark header
+        t.env.CXXFLAGS = [x for x in t.env.CXXFLAGS if x != to_remove]
 
 def test_summary(bld):
     from io import BytesIO
