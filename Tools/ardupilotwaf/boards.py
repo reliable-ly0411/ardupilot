@@ -21,6 +21,26 @@ sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../..
 import chibios_hwdef
 import build_options
 
+def build_option_value(options, opt):
+    '''1 or 0 if build option opt was given to waf configure, else None.
+    options is the dict of configure options'''
+    enable_option = opt.config_option().replace("-","_")
+    disable_option = "disable_" + enable_option[len("enable-"):]
+    # optparse stores --enable-foo-bar as enable_foo_bar
+    lower_disable_option = disable_option.lower()
+    lower_enable_option = enable_option.lower()
+    if options.get(enable_option) or options.get(lower_enable_option):
+        return 1
+    if options.get(disable_option) or options.get(lower_disable_option):
+        return 0
+    return None
+
+def build_option_defines(options):
+    '''{define: 0 or 1} for the build options given to waf configure, for
+    the hwdef scripts to write those values in hwdef.h'''
+    values = {opt.define: build_option_value(options, opt) for opt in build_options.BUILD_OPTIONS}
+    return {d: v for d, v in values.items() if v is not None}
+
 class BoardMeta(type):
     def __init__(cls, name, bases, dct):
         super(BoardMeta, cls).__init__(name, bases, dct)
@@ -69,6 +89,22 @@ class Board:
              getattr(cfg.options, 'enable_usb_debug_startup_wait', False)) and
                 not isinstance(self, chibios)):
             cfg.fatal('--enable-USB-debug requires an STM32H7 ChibiOS board')
+
+        # Preserve our allocator's zero initialisation across construction.
+        # scan-build compiles with gcc but analyses with clang, which rejects
+        # -flifetime-dse and then silently skips the analysis
+        analyser = any(os.path.basename(c) == 'c++-analyzer' for c in cfg.env.CXX)
+        if 'clang++' in cfg.env.COMPILER_CXX or cfg.env.TOOLCHAIN == 'emscripten' or analyser:
+            # Clang can elide calls to our replacement operator new entirely.
+            zero_init_flag = '-fno-builtin'
+        else:
+            zero_init_flag = '-flifetime-dse=1'
+        env.CXXFLAGS += [zero_init_flag]
+        # Board configure_env methods may replace LINKFLAGS, so add this here
+        # to preserve the same behaviour during LTO. QURT invokes hexagon-link
+        # directly, which does not accept compiler flags.
+        if env.BOARD_CLASS != 'QURT':
+            env.LINKFLAGS += [zero_init_flag]
 
         self.disable_buggy_compiler_warnings(cfg, env)
 
@@ -180,18 +216,14 @@ class Board:
 
         # support enabling any option in build_options.py
         for opt in build_options.BUILD_OPTIONS:
-            enable_option = opt.config_option().replace("-","_")
-            disable_option = "disable_" + enable_option[len("enable-"):]
-            lower_disable_option = disable_option.lower().replace("_", "-")
-            lower_enable_option = enable_option.lower().replace("_", "-")
-            if getattr(cfg.options, enable_option, False) or getattr(cfg.options, lower_enable_option, False):
-                env.CXXFLAGS += ['-D%s=1' % opt.define]
-                cfg.msg("Enabled %s" % opt.label, 'yes', color='GREEN')
-            elif getattr(cfg.options, disable_option, False) or getattr(cfg.options, lower_disable_option, False):
-                env.CXXFLAGS += ['-D%s=0' % opt.define]
-                cfg.msg("Enabled %s" % opt.label, 'no', color='YELLOW')
-            else:
+            value = build_option_value(vars(cfg.options), opt)
+            if value is None:
                 continue
+            env.CXXFLAGS += ['-D%s=%u' % (opt.define, value)]
+            if value:
+                cfg.msg("Enabled %s" % opt.label, 'yes', color='GREEN')
+            else:
+                cfg.msg("Enabled %s" % opt.label, 'no', color='YELLOW')
             # the option replaces any default a board set for this define:
             # DEFINES and ap_config.h come after CXXFLAGS, so they would win
             env.DEFINES.pop(opt.define, None)
@@ -680,7 +712,8 @@ class Board:
         if not embed.create_embedded_h(header, ctx.env.ROMFS_FILES, ctx.env.ROMFS_UNCOMPRESSED):
             ctx.fatal("Failed to created ap_romfs_embedded.h")
 
-        ctx.env.CXXFLAGS += ['-DHAL_HAVE_AP_ROMFS_EMBEDDED_H']
+        ctx.env.CFLAGS += ['-DAP_ROMFS_ENABLED=1']
+        ctx.env.CXXFLAGS += ['-DAP_ROMFS_ENABLED=1']
 
         # Allow lua to load from ROMFS if any lua files are added
         for file in ctx.env.ROMFS_FILES:
@@ -818,6 +851,27 @@ class SITLBoard(Board):
 
         super().configure(cfg)
 
+        if cfg.options.asan:
+            # The sanitizer runtime comes before our archives on the link
+            # line and supplies its own operator new, so a program which
+            # does not otherwise need AP_Common/c++.cpp never pulls that
+            # object out of the archive: it gets the sanitizer's allocator
+            # rather than our zeroing one, and none of our leak
+            # suppressions.  Naming operator new does not help, as the
+            # sanitizer's own definition satisfies it, so ask for a symbol
+            # only that object defines.
+            #
+            # This is added here rather than in configure_env() because
+            # waf's configure checks link none of our code: with clang,
+            # whose sanitizer runtime is a static archive carrying only a
+            # weak reference, the request becomes an unsatisfied undefined
+            # symbol and every check fails.
+            symbol = '__lsan_default_suppressions'
+            if cfg.env.DEST_OS == 'darwin':
+                # Mach-O prefixes C symbols with an underscore
+                symbol = '_' + symbol
+            cfg.env.LINKFLAGS += ['-Wl,-u,' + symbol]
+
     def configure_env(self, cfg, env):
         super().configure_env(cfg, env)
         env.DEFINES.update(
@@ -893,7 +947,14 @@ class SITLBoard(Board):
         if cfg.options.asan:
             if not cfg.env.DEBUG:
                 cfg.fatal('--asan requires --debug for reliable instrumentation')
+            # the C sources need instrumenting as well; the sanitizer
+            # interposes malloc either way, but without this an overflow
+            # inside a .c file is invisible
             env.CXXFLAGS += [
+                '-fsanitize=address',
+                '-fno-omit-frame-pointer',
+            ]
+            env.CFLAGS += [
                 '-fsanitize=address',
                 '-fno-omit-frame-pointer',
             ]
@@ -907,7 +968,10 @@ class SITLBoard(Board):
 
         env.LINKFLAGS += ['-pthread',]
 
-        if 'clang++' in cfg.env.COMPILER_CXX and cfg.options.asan:
+        if cfg.options.asan:
+            # the sanitizer runtime must be on the link line too, otherwise
+            # even waf's own configure checks fail with undefined
+            # references to __asan_init
             env.LINKFLAGS += ['-fsanitize=address']
 
         env.AP_LIBRARIES += [
@@ -919,11 +983,16 @@ class SITLBoard(Board):
             'SITL',
         ]
 
+        # ELF/Mach-O vehicle builds must not silently lose the malloc wrapper.
+        # Cygwin uses runtime import-table patching; WASM has a separate linker.
+        env.CHECK_MALLOC_WRAPPING = cfg.env.DEST_OS != 'cygwin' and cfg.env.TOOLCHAIN != 'emscripten'
+
         # wrap malloc to ensure memory is zeroed
         if cfg.env.DEST_OS == 'cygwin':
             pass # handled at runtime in libraries/AP_Common/c++.cpp
         elif platform.system() != 'Darwin':
             env.LINKFLAGS += ['-Wl,--wrap,malloc']
+        # Darwin has no --wrap; malloc is replaced in libraries/AP_Common/c++.cpp
         
         if cfg.options.enable_sfml:
             if not cfg.check_SFML(env):
@@ -1462,6 +1531,7 @@ class LinuxBoard(Board):
             'AP_HAL_Linux',
         ]
 
+        env.CHECK_MALLOC_WRAPPING = True
         # wrap malloc to ensure memory is zeroed
         env.LINKFLAGS += ['-Wl,--wrap,malloc']
 
