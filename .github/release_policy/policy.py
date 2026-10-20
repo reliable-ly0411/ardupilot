@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Release gate. Standard-library only; no publishing or credential management.
 
 AP_FLAKE8_CLEAN
@@ -8,10 +7,11 @@ import copy
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import tempfile
+
+from pathlib import Path
 
 CONFIG = '.github/release_policy/config.json'
 STATE_REF = 'refs/heads/release-policy-state'

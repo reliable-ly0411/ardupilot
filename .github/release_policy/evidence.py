@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Record/verify candidate artifact provenance without rebuilding or publishing.
 
 AP_FLAKE8_CLEAN
@@ -8,11 +7,12 @@ import hashlib
 import io
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
 import zipfile
+
+from pathlib import Path
 
 
 def api(path):

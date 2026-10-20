@@ -1,8 +1,9 @@
 """Fail closed if a heavy workflow regains an automatic entry point. AP_FLAKE8_CLEAN"""
 import json
-from pathlib import Path
 import re
 import unittest
+
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = json.loads(Path(__file__).with_name('config.json').read_text())
