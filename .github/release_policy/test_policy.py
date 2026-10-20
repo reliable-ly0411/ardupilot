@@ -37,17 +37,20 @@ class SelectionTests(unittest.TestCase):
         self.assertIsNone(self.select([release()]))
 
     def test_unknown_historical_release_is_baselined(self):
-        r = release(); r['published_at'] = '2026-01-01T00:00:00Z'
+        r = release()
+        r['published_at'] = '2026-01-01T00:00:00Z'
         self.assertIsNone(self.select([r]))
         self.assertEqual(self.state['releases']['1']['status'], 'baseline')
 
     def test_draft_and_prerelease_do_not_build(self):
         for key in ('draft', 'prerelease'):
-            r = release(); r[key] = True
+            r = release()
+            r[key] = True
             self.assertIsNone(self.select([r]))
 
     def test_prerelease_promotion_with_old_date(self):
-        r = release(); r.update(prerelease=True, published_at='2026-01-01T00:00:00Z')
+        r = release()
+        r.update(prerelease=True, published_at='2026-01-01T00:00:00Z')
         self.assertIsNone(self.select([r]))
         r['prerelease'] = False
         self.assertIsNotNone(self.select([r]))
@@ -57,8 +60,8 @@ class SelectionTests(unittest.TestCase):
 
     def test_retry_keeps_original_manifest(self):
         manifest = {'downstream_sha': 'b' * 40, 'source_sha': 'c' * 40}
-        self.state['releases']['1'] = dict(tag='v1.0.0', status='failed', upstream_sha=SHA,
-                                         attempts=1, manifest=manifest)
+        self.state['releases']['1'] = dict(
+            tag='v1.0.0', status='failed', upstream_sha=SHA, attempts=1, manifest=manifest)
         selected = self.select([release()])
         self.assertEqual(selected[1]['manifest'], manifest)
 
@@ -105,7 +108,8 @@ class SelectionTests(unittest.TestCase):
 
     def test_revoked_stable_status_is_blocked(self):
         self.state['releases']['1'] = dict(tag='v1.0.0', status='built', upstream_sha=SHA)
-        r = release(); r['prerelease'] = True
+        r = release()
+        r['prerelease'] = True
         self.assertIsNone(self.select([r]))
         self.assertEqual(self.state['releases']['1']['status'], 'blocked')
 
