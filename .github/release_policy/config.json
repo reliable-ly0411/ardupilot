@@ -11,7 +11,7 @@
     "Tracker": "^(?:Tracker|AntennaTracker)-\\d+\\.\\d+\\.\\d+$"
   },
   "max_attempts": 3,
-  "publication": "blocked: no authorized downstream publication route; existing owner, credential and human gates remain required",
+  "publication": "blocked: no verified downstream publication recipe; existing owner, credential and human gates remain required",
   "baseline": {
     "412232466": {
       "tag": "Tracker-4.7.2",

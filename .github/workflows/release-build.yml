@@ -94,5 +94,5 @@ jobs:
         if-no-files-found: error
         retention-days: 90
     - name: Publication remains blocked
-      run: echo 'Validated candidate only. No authorized downstream publisher is configured; existing gates are unchanged.'
+      run: echo 'Validated candidate only. No verified downstream publisher is configured; existing gates are unchanged.'
         >> "$GITHUB_STEP_SUMMARY"
