@@ -1,0 +1,677 @@
+{
+  "schema": 1,
+  "upstream": "ArduPilot/ardupilot",
+  "branch": "master",
+  "bootstrap_at": "2026-10-20T13:55:00Z",
+  "families": {
+    "Copter": "^Copter-\\d+\\.\\d+\\.\\d+$",
+    "Plane": "^Plane-\\d+\\.\\d+\\.\\d+$",
+    "Rover": "^Rover-\\d+\\.\\d+\\.\\d+$",
+    "Sub": "^Sub-\\d+\\.\\d+\\.\\d+$",
+    "Tracker": "^(?:Tracker|AntennaTracker)-\\d+\\.\\d+\\.\\d+$"
+  },
+  "max_attempts": 3,
+  "publication": "blocked: no verified downstream publication recipe; existing owner, credential and human gates remain required",
+  "baseline": {
+    "412232466": {
+      "tag": "Tracker-4.7.2",
+      "upstream_sha": "fb773567896014da007bca58358704d4a0d8516f",
+      "status": "baseline",
+      "published_at": "2026-10-14T00:49:57Z"
+    },
+    "412233057": {
+      "tag": "Sub-4.7.2",
+      "upstream_sha": "fb773567896014da007bca58358704d4a0d8516f",
+      "status": "baseline",
+      "published_at": "2026-10-14T00:51:12Z"
+    },
+    "412233440": {
+      "tag": "Rover-4.7.2",
+      "upstream_sha": "fb773567896014da007bca58358704d4a0d8516f",
+      "status": "baseline",
+      "published_at": "2026-10-14T00:52:03Z"
+    },
+    "412234111": {
+      "tag": "Plane-4.7.2",
+      "upstream_sha": "fb773567896014da007bca58358704d4a0d8516f",
+      "status": "baseline",
+      "published_at": "2026-10-14T00:53:31Z"
+    },
+    "412233816": {
+      "tag": "Copter-4.7.2",
+      "upstream_sha": "fb773567896014da007bca58358704d4a0d8516f",
+      "status": "baseline",
+      "published_at": "2026-10-14T00:52:51Z"
+    },
+    "412231293": {
+      "tag": "AP_Periph-4.7.2",
+      "upstream_sha": "fb773567896014da007bca58358704d4a0d8516f",
+      "status": "baseline",
+      "published_at": "2026-10-14T00:47:27Z"
+    },
+    "382392957": {
+      "tag": "Tracker-4.7.1",
+      "upstream_sha": "dbe792162d06cab66c3475fd5556bf7a120f119e",
+      "status": "baseline",
+      "published_at": "2026-09-03T23:46:35Z"
+    },
+    "382393995": {
+      "tag": "Sub-4.7.1",
+      "upstream_sha": "dbe792162d06cab66c3475fd5556bf7a120f119e",
+      "status": "baseline",
+      "published_at": "2026-09-03T23:48:51Z"
+    },
+    "382394247": {
+      "tag": "Rover-4.7.1",
+      "upstream_sha": "dbe792162d06cab66c3475fd5556bf7a120f119e",
+      "status": "baseline",
+      "published_at": "2026-09-03T23:49:41Z"
+    },
+    "382394823": {
+      "tag": "Plane-4.7.1",
+      "upstream_sha": "dbe792162d06cab66c3475fd5556bf7a120f119e",
+      "status": "baseline",
+      "published_at": "2026-09-03T23:51:26Z"
+    },
+    "382394547": {
+      "tag": "Copter-4.7.1",
+      "upstream_sha": "dbe792162d06cab66c3475fd5556bf7a120f119e",
+      "status": "baseline",
+      "published_at": "2026-09-03T23:50:43Z"
+    },
+    "382393321": {
+      "tag": "AP_Periph-4.7.1",
+      "upstream_sha": "dbe792162d06cab66c3475fd5556bf7a120f119e",
+      "status": "baseline",
+      "published_at": "2026-09-03T23:47:54Z"
+    },
+    "360245344": {
+      "tag": "Tracker-4.7.0",
+      "upstream_sha": "1511f27194f1dcc3728270883047bdf022b3fd53",
+      "status": "baseline",
+      "published_at": "2026-07-27T06:47:12Z"
+    },
+    "360246064": {
+      "tag": "Sub-4.7.0",
+      "upstream_sha": "1511f27194f1dcc3728270883047bdf022b3fd53",
+      "status": "baseline",
+      "published_at": "2026-07-27T06:49:05Z"
+    },
+    "360246405": {
+      "tag": "Rover-4.7.0",
+      "upstream_sha": "1511f27194f1dcc3728270883047bdf022b3fd53",
+      "status": "baseline",
+      "published_at": "2026-07-27T06:50:06Z"
+    },
+    "360246993": {
+      "tag": "Plane-4.7.0",
+      "upstream_sha": "1511f27194f1dcc3728270883047bdf022b3fd53",
+      "status": "baseline",
+      "published_at": "2026-07-27T06:51:28Z"
+    },
+    "357759041": {
+      "tag": "Copter-4.7.0",
+      "upstream_sha": "1511f27194f1dcc3728270883047bdf022b3fd53",
+      "status": "baseline",
+      "published_at": "2026-07-22T03:17:14Z"
+    },
+    "360245754": {
+      "tag": "AP_Periph-4.7.0",
+      "upstream_sha": "1511f27194f1dcc3728270883047bdf022b3fd53",
+      "status": "baseline",
+      "published_at": "2026-07-27T06:48:18Z"
+    },
+    "259446686": {
+      "tag": "Copter-4.6.3",
+      "upstream_sha": "92b0cd788ec29406f26c6f9c31d5ceedbd1cc538",
+      "status": "baseline",
+      "published_at": "2025-11-20T05:46:04Z"
+    },
+    "259446561": {
+      "tag": "Tracker-4.6.3",
+      "upstream_sha": "3fc7011a7d3dc047cbb17d8bd98ee94577d144c6",
+      "status": "baseline",
+      "published_at": "2025-11-04T04:41:31Z"
+    },
+    "259446623": {
+      "tag": "Rover-4.6.3",
+      "upstream_sha": "3fc7011a7d3dc047cbb17d8bd98ee94577d144c6",
+      "status": "baseline",
+      "published_at": "2025-11-04T04:42:10Z"
+    },
+    "263867262": {
+      "tag": "Plane-4.6.3",
+      "upstream_sha": "3fc7011a7d3dc047cbb17d8bd98ee94577d144c6",
+      "status": "baseline",
+      "published_at": "2025-11-20T05:47:48Z"
+    },
+    "233380551": {
+      "tag": "Tracker-4.6.2",
+      "upstream_sha": "1ebd4d996e8b6bbeb1462a9655c00aa861d5beef",
+      "status": "baseline",
+      "published_at": "2025-07-18T04:51:03Z"
+    },
+    "233380605": {
+      "tag": "Rover-4.6.2",
+      "upstream_sha": "1ebd4d996e8b6bbeb1462a9655c00aa861d5beef",
+      "status": "baseline",
+      "published_at": "2025-07-18T04:51:48Z"
+    },
+    "233380683": {
+      "tag": "Plane-4.6.2",
+      "upstream_sha": "1ebd4d996e8b6bbeb1462a9655c00aa861d5beef",
+      "status": "baseline",
+      "published_at": "2025-07-18T04:52:58Z"
+    },
+    "233380653": {
+      "tag": "Copter-4.6.2",
+      "upstream_sha": "1ebd4d996e8b6bbeb1462a9655c00aa861d5beef",
+      "status": "baseline",
+      "published_at": "2025-07-18T04:52:28Z"
+    },
+    "229029687": {
+      "tag": "Tracker-4.6.1",
+      "upstream_sha": "57591cb8235973a00004459ae441865fdb5afaf7",
+      "status": "baseline",
+      "published_at": "2025-07-01T08:18:34Z"
+    },
+    "229029837": {
+      "tag": "Rover-4.6.1",
+      "upstream_sha": "57591cb8235973a00004459ae441865fdb5afaf7",
+      "status": "baseline",
+      "published_at": "2025-07-01T08:19:23Z"
+    },
+    "229030506": {
+      "tag": "Plane-4.6.1",
+      "upstream_sha": "57591cb8235973a00004459ae441865fdb5afaf7",
+      "status": "baseline",
+      "published_at": "2025-07-01T08:22:28Z"
+    },
+    "229029991": {
+      "tag": "Copter-4.6.1",
+      "upstream_sha": "57591cb8235973a00004459ae441865fdb5afaf7",
+      "status": "baseline",
+      "published_at": "2025-07-01T08:20:08Z"
+    },
+    "220241786": {
+      "tag": "Tracker-4.6.0",
+      "upstream_sha": "9cc2b9d59a54868be94e53bd45fc4279e33f6b9f",
+      "status": "baseline",
+      "published_at": "2025-05-22T04:25:00Z"
+    },
+    "220241843": {
+      "tag": "Rover-4.6.0",
+      "upstream_sha": "9cc2b9d59a54868be94e53bd45fc4279e33f6b9f",
+      "status": "baseline",
+      "published_at": "2025-05-22T04:25:41Z"
+    },
+    "220241964": {
+      "tag": "Plane-4.6.0",
+      "upstream_sha": "9cc2b9d59a54868be94e53bd45fc4279e33f6b9f",
+      "status": "baseline",
+      "published_at": "2025-05-22T04:27:23Z"
+    },
+    "220241889": {
+      "tag": "Copter-4.6.0",
+      "upstream_sha": "9cc2b9d59a54868be94e53bd45fc4279e33f6b9f",
+      "status": "baseline",
+      "published_at": "2025-05-22T04:26:27Z"
+    },
+    "180131467": {
+      "tag": "Tracker-4.5.7",
+      "upstream_sha": "a6c06e8b1d605afacb25c82fa5069b8990a372c8",
+      "status": "baseline",
+      "published_at": "2024-10-16T02:11:48Z"
+    },
+    "180131519": {
+      "tag": "Rover-4.5.7",
+      "upstream_sha": "52bed8d542003c4767fea21b0f5a78fe864a377f",
+      "status": "baseline",
+      "published_at": "2024-10-16T02:12:40Z"
+    },
+    "180131576": {
+      "tag": "Copter-4.5.7",
+      "upstream_sha": "2a3dc4b7bf2507120f7378a7b2fde73185e0c325",
+      "status": "baseline",
+      "published_at": "2024-10-16T02:13:28Z"
+    },
+    "173318366": {
+      "tag": "Tracker-4.5.6",
+      "upstream_sha": "eade8be796f7601dd8f128c2a75585ec80bad3be",
+      "status": "baseline",
+      "published_at": "2024-09-03T23:19:11Z"
+    },
+    "173318408": {
+      "tag": "Rover-4.5.6",
+      "upstream_sha": "c61efecb0460e3e56c8f298517b0a3f7903e9a7e",
+      "status": "baseline",
+      "published_at": "2024-09-03T23:19:56Z"
+    },
+    "173318459": {
+      "tag": "Copter-4.5.6",
+      "upstream_sha": "7ce11b4194f6c6b77d8e1f2bd5f14c0466d5e696",
+      "status": "baseline",
+      "published_at": "2024-09-03T23:20:39Z"
+    },
+    "168171255": {
+      "tag": "Tracker-4.5.5",
+      "upstream_sha": "096c637e0b3371484b34a6eedbf909c3b4e7b4b7",
+      "status": "baseline",
+      "published_at": "2024-08-01T06:18:58Z"
+    },
+    "168171325": {
+      "tag": "Rover-4.5.5",
+      "upstream_sha": "9064e22695992593b12e71a2b2ad25faba2f7277",
+      "status": "baseline",
+      "published_at": "2024-08-01T06:19:45Z"
+    },
+    "171049455": {
+      "tag": "Plane-4.5.5",
+      "upstream_sha": "d6ebfc21844e2bc0ab28c8c688b8dae94abccf5a",
+      "status": "baseline",
+      "published_at": "2024-08-20T11:36:10Z"
+    },
+    "168171397": {
+      "tag": "Copter-4.5.5",
+      "upstream_sha": "142aece2da56146d94dcad0f6b539af6960538f6",
+      "status": "baseline",
+      "published_at": "2024-08-01T06:20:29Z"
+    },
+    "160667777": {
+      "tag": "Tracker-4.5.4",
+      "upstream_sha": "f677461ad2f970e0c66a229c9008334bafedd2d8",
+      "status": "baseline",
+      "published_at": "2024-06-15T21:51:32Z"
+    },
+    "160667754": {
+      "tag": "Rover-4.5.4",
+      "upstream_sha": "fe4831dd2ecdf9c68769c629566bf9833ec55f54",
+      "status": "baseline",
+      "published_at": "2024-06-15T21:50:15Z"
+    },
+    "160667811": {
+      "tag": "Plane-4.5.4",
+      "upstream_sha": "e8f937aad532b19e5dfed1d55fa7c85b238bca9a",
+      "status": "baseline",
+      "published_at": "2024-06-15T21:52:58Z"
+    },
+    "160667747": {
+      "tag": "Copter-4.5.4",
+      "upstream_sha": "fd1bcc6182bf7527643ca1a4648c3b68ca016ce4",
+      "status": "baseline",
+      "published_at": "2024-06-15T21:49:43Z"
+    },
+    "157768057": {
+      "tag": "Tracker-4.5.3",
+      "upstream_sha": "bec947e32530d5b3b3ce9a4c1c59dfacea61ca1d",
+      "status": "baseline",
+      "published_at": "2024-05-28T10:43:02Z"
+    },
+    "157768151": {
+      "tag": "Rover-4.5.3",
+      "upstream_sha": "548b0b2c3260cd0cff42e2093537066431a3620b",
+      "status": "baseline",
+      "published_at": "2024-05-28T10:43:38Z"
+    },
+    "157891098": {
+      "tag": "Plane-4.5.3",
+      "upstream_sha": "6cedbcb0e5fc14a99742a50a37117ac537be4fe8",
+      "status": "baseline",
+      "published_at": "2024-05-29T00:04:07Z"
+    },
+    "157767954": {
+      "tag": "Copter-4.5.3",
+      "upstream_sha": "ee14ff3822161368ec403700bf96d02b84def06c",
+      "status": "baseline",
+      "published_at": "2024-05-28T10:42:17Z"
+    },
+    "155604162": {
+      "tag": "Tracker-4.5.2",
+      "upstream_sha": "d7321ab6d43d4b36a54a683a336c59829dad0fba",
+      "status": "baseline",
+      "published_at": "2024-05-14T01:42:24Z"
+    },
+    "155604126": {
+      "tag": "Rover-4.5.2",
+      "upstream_sha": "291be84828041815142e31374de15ba5bcf1bba0",
+      "status": "baseline",
+      "published_at": "2024-05-14T01:41:41Z"
+    },
+    "155604090": {
+      "tag": "Copter-4.5.2",
+      "upstream_sha": "291be84828041815142e31374de15ba5bcf1bba0",
+      "status": "baseline",
+      "published_at": "2024-05-14T01:40:59Z"
+    },
+    "150197451": {
+      "tag": "Tracker-4.5.1",
+      "upstream_sha": "58e2fb1ea75e18b6ab6f29701358101a7c89ae1c",
+      "status": "baseline",
+      "published_at": "2024-04-08T11:27:06Z"
+    },
+    "150197551": {
+      "tag": "Rover-4.5.1",
+      "upstream_sha": "71a2f169b7c5a99c15ccc4f8985b3e4d641913a1",
+      "status": "baseline",
+      "published_at": "2024-04-08T11:27:54Z"
+    },
+    "150197649": {
+      "tag": "Copter-4.5.1",
+      "upstream_sha": "71a2f169b7c5a99c15ccc4f8985b3e4d641913a1",
+      "status": "baseline",
+      "published_at": "2024-04-08T11:28:41Z"
+    },
+    "149319672": {
+      "tag": "Tracker-4.5.0",
+      "upstream_sha": "7bd5243607bc36d6e843e5285c879a7990fd48c1",
+      "status": "baseline",
+      "published_at": "2024-04-02T04:13:47Z"
+    },
+    "149319697": {
+      "tag": "Rover-4.5.0",
+      "upstream_sha": "53ad2c2a2c7e7ae220cd140013510459c4c2e6a4",
+      "status": "baseline",
+      "published_at": "2024-04-02T04:14:17Z"
+    },
+    "149321098": {
+      "tag": "Plane-4.5.0",
+      "upstream_sha": "233f344a37e177343f372bec31cb2cc5890a26ee",
+      "status": "baseline",
+      "published_at": "2024-04-02T04:41:47Z"
+    },
+    "149319718": {
+      "tag": "Copter-4.5.0",
+      "upstream_sha": "53ad2c2a2c7e7ae220cd140013510459c4c2e6a4",
+      "status": "baseline",
+      "published_at": "2024-04-02T04:14:39Z"
+    },
+    "134563414": {
+      "tag": "Rover-4.4.0",
+      "upstream_sha": "9279df6191a772c098b2e4797c95ac954f258d88",
+      "status": "baseline",
+      "published_at": "2023-12-20T03:25:17Z"
+    },
+    "147998521": {
+      "tag": "Plane-4.4.4",
+      "upstream_sha": "16b783822905668b160b0eb1ef5599ce0d3a0231",
+      "status": "baseline",
+      "published_at": "2024-03-22T21:13:11Z"
+    },
+    "134563385": {
+      "tag": "Copter-4.4.4",
+      "upstream_sha": "db53a28f321dc8233ee49d3cc6b395b5835c768b",
+      "status": "baseline",
+      "published_at": "2023-12-20T03:24:35Z"
+    },
+    "129287750": {
+      "tag": "Copter-4.4.3",
+      "upstream_sha": "b44b804bcf3f93f35b6facbe7f31efdaf2f9b44b",
+      "status": "baseline",
+      "published_at": "2023-11-14T06:34:57Z"
+    },
+    "129287692": {
+      "tag": "Copter-4.4.2",
+      "upstream_sha": "656c12a5654edc48a4ea85a24ee2fa98891e95be",
+      "status": "baseline",
+      "published_at": "2023-11-14T06:34:08Z"
+    },
+    "122697592": {
+      "tag": "Copter-4.4.1",
+      "upstream_sha": "e010f97906087a3a1975e1c4fcc1f88a249599ce",
+      "status": "baseline",
+      "published_at": "2023-09-26T22:48:10Z"
+    },
+    "118539414": {
+      "tag": "Copter-4.3.8",
+      "upstream_sha": "60ebf6fbb91543912da34bb2513421477f428752",
+      "status": "baseline",
+      "published_at": "2023-08-24T11:31:37Z"
+    },
+    "118539532": {
+      "tag": "Copter-4.4.0",
+      "upstream_sha": "502702df62572519b56971fe9fed5b2883640879",
+      "status": "baseline",
+      "published_at": "2023-08-24T11:32:44Z"
+    },
+    "107770477": {
+      "tag": "Copter-4.3.7",
+      "upstream_sha": "c8506ed4782f3867dc544c8dae845a976cf9b853",
+      "status": "baseline",
+      "published_at": "2023-06-08T02:06:15Z"
+    },
+    "98477205": {
+      "tag": "Copter-4.3.6",
+      "upstream_sha": "0c5e999c44785b0b8f53e7758856ceea614ef01b",
+      "status": "baseline",
+      "published_at": "2023-04-06T23:23:46Z"
+    },
+    "95634613": {
+      "tag": "Copter-4.3.5",
+      "upstream_sha": "02ff7ea394a07393c8bb67789f4e098f0369323b",
+      "status": "baseline",
+      "published_at": "2023-03-15T00:28:04Z"
+    },
+    "94170930": {
+      "tag": "Copter-4.3.4",
+      "upstream_sha": "43447be86613734c522a580e63dfc869faba2ceb",
+      "status": "baseline",
+      "published_at": "2023-03-02T02:37:42Z"
+    },
+    "89662478": {
+      "tag": "Copter-4.3.3",
+      "upstream_sha": "34e8e02c48d2982d722b982e1bfac5581d4401ae",
+      "status": "baseline",
+      "published_at": "2023-01-20T05:44:25Z"
+    },
+    "87046290": {
+      "tag": "Copter-4.3.2",
+      "upstream_sha": "fcef79e79ede303b19960dae9450cf9bccc02249",
+      "status": "baseline",
+      "published_at": "2022-12-23T07:11:21Z"
+    },
+    "87119447": {
+      "tag": "Plane-4.3.2",
+      "upstream_sha": "cafc7b9119f307be9cc990468a1c58e418e112ba",
+      "status": "baseline",
+      "published_at": "2022-12-23T20:45:36Z"
+    },
+    "85065777": {
+      "tag": "Copter-4.3.1",
+      "upstream_sha": "22f45675693991bf0021d5e55697dc611770c27a",
+      "status": "baseline",
+      "published_at": "2022-12-05T23:04:17Z"
+    },
+    "81510595": {
+      "tag": "Copter-4.3.0",
+      "upstream_sha": "93448b71380c417644c9082b7b23e80fb982b626",
+      "status": "baseline",
+      "published_at": "2022-10-31T03:40:56Z"
+    },
+    "75608461": {
+      "tag": "Rover-4.2.3",
+      "upstream_sha": "2172cfb39ad8f0bcdcd343d74512414f7cb1f6a6",
+      "status": "baseline",
+      "published_at": "2022-08-29T07:42:52Z"
+    },
+    "75608423": {
+      "tag": "Copter-4.2.3",
+      "upstream_sha": "a480c0a74a3edc7e9905bfd9821dfa973d416077",
+      "status": "baseline",
+      "published_at": "2022-08-29T07:42:26Z"
+    },
+    "72191107": {
+      "tag": "Copter-4.2.2",
+      "upstream_sha": "4fcfa4b2cd2a5491edcfb34936de5cab26517cb8",
+      "status": "baseline",
+      "published_at": "2022-07-18T05:13:15Z"
+    },
+    "72191249": {
+      "tag": "Rover-4.2.2",
+      "upstream_sha": "712b9bc22354b4ea3cb7a1744236a214da60a884",
+      "status": "baseline",
+      "published_at": "2022-07-18T05:18:22Z"
+    },
+    "70447722": {
+      "tag": "Plane-4.2.2",
+      "upstream_sha": "693c9d9128d972c3fdbb5a25884f75eea578199f",
+      "status": "baseline",
+      "published_at": "2022-06-24T01:45:25Z"
+    },
+    "68782756": {
+      "tag": "Rover-4.2.1",
+      "upstream_sha": "fbf719b24717ec061121a5ecc316ae75f53ee394",
+      "status": "baseline",
+      "published_at": "2022-06-07T03:27:55Z"
+    },
+    "68782722": {
+      "tag": "Copter-4.2.1",
+      "upstream_sha": "c8b6b67494cde54b3906c88f7238d9d5979e6e86",
+      "status": "baseline",
+      "published_at": "2022-06-07T03:27:09Z"
+    },
+    "67910769": {
+      "tag": "Rover-4.2.0",
+      "upstream_sha": "ce668594cb55708e391ff64f4664bf9ebbe4e2e9",
+      "status": "baseline",
+      "published_at": "2022-05-26T11:40:59Z"
+    },
+    "67515444": {
+      "tag": "Plane-4.2.1",
+      "upstream_sha": "54a5bd007df3521f6652cf20038b719fd353119a",
+      "status": "baseline",
+      "published_at": "2022-05-23T07:57:57Z"
+    },
+    "67910710": {
+      "tag": "Copter-4.2.0",
+      "upstream_sha": "678921699cb1b2b8141f56cfcfb8333a38e041c2",
+      "status": "baseline",
+      "published_at": "2022-05-26T11:40:05Z"
+    },
+    "66092445": {
+      "tag": "Plane-4.2.0",
+      "upstream_sha": "44735215e5bf4dc26b55c1c3b0d361188c2927d1",
+      "status": "baseline",
+      "published_at": "2022-05-05T08:41:49Z"
+    },
+    "59982726": {
+      "tag": "Rover-4.1.5",
+      "upstream_sha": "3ef2b3f48ad485a2a964aeaa2126f2bd97fd5646",
+      "status": "baseline",
+      "published_at": "2022-02-20T02:02:26Z"
+    },
+    "59982735": {
+      "tag": "Copter-4.1.5",
+      "upstream_sha": "1002fd6e9728466d9eeaa338505e5b50d340d315",
+      "status": "baseline",
+      "published_at": "2022-02-20T02:03:02Z"
+    },
+    "59559740": {
+      "tag": "Rover-4.1.4",
+      "upstream_sha": "ceb1e903afc829d525cfa8f461b0e740cc601941",
+      "status": "baseline",
+      "published_at": "2022-02-14T23:24:37Z"
+    },
+    "59559660": {
+      "tag": "Copter-4.1.4",
+      "upstream_sha": "6fa4bfecce3fcbc4bd9166a01dc7343bb47ec2fb",
+      "status": "baseline",
+      "published_at": "2022-02-14T23:22:41Z"
+    },
+    "59559702": {
+      "tag": "Rover-4.1.3",
+      "upstream_sha": "718a80619a0218db014fccebed1cb3826dd26d69",
+      "status": "baseline",
+      "published_at": "2022-02-14T23:23:43Z"
+    },
+    "59559566": {
+      "tag": "Copter-4.1.3",
+      "upstream_sha": "2fb939a1cae0a60f478963094431c3b07e6b475a",
+      "status": "baseline",
+      "published_at": "2022-02-14T23:21:15Z"
+    },
+    "55655955": {
+      "tag": "Rover-4.1.2",
+      "upstream_sha": "34cab60fb689120c7e4fc4b94c7745eff9460497",
+      "status": "baseline",
+      "published_at": "2021-12-20T09:58:27Z"
+    },
+    "55655798": {
+      "tag": "Copter-4.1.2",
+      "upstream_sha": "03bf772aaf8deb2edc6222578339c8999454795b",
+      "status": "baseline",
+      "published_at": "2021-12-20T09:56:17Z"
+    },
+    "55655895": {
+      "tag": "Rover-4.1.1",
+      "upstream_sha": "7b9f15d887f232b2d9bd2ef3ea6fd1a8eb4ed826",
+      "status": "baseline",
+      "published_at": "2021-12-20T09:57:37Z"
+    },
+    "55655741": {
+      "tag": "Copter-4.1.1",
+      "upstream_sha": "01d1aa1e92d53bf4443888ad94692bb47aaa0839",
+      "status": "baseline",
+      "published_at": "2021-12-20T09:55:20Z"
+    },
+    "51177128": {
+      "tag": "Copter-4.1.0",
+      "upstream_sha": "ea559a56aa2ce9ede932e22e5ea28eb1df07781c",
+      "status": "baseline",
+      "published_at": "2021-10-12T01:41:16Z"
+    },
+    "49847606": {
+      "tag": "Rover-4.1.0",
+      "upstream_sha": "60a7194b8306ef39bfb6090d8b4427797711ccec",
+      "status": "baseline",
+      "published_at": "2021-09-20T11:52:56Z"
+    },
+    "24094378": {
+      "tag": "Copter-4.0.3",
+      "upstream_sha": "ffd08628c43694c5611b9e815de99e3a459e1b44",
+      "status": "baseline",
+      "published_at": "2020-02-29T03:33:36Z"
+    },
+    "23588829": {
+      "tag": "Copter-4.0.2",
+      "upstream_sha": "aae944a87dd045b7bcec906ecd42ee63b542c47f",
+      "status": "baseline",
+      "published_at": "2020-02-12T00:55:51Z"
+    }
+  },
+  "heavy_workflows": [
+    "test_environment.yml",
+    "test_sitl_periph.yml",
+    "test_sitl_rover.yml",
+    "cygwin_build.yml",
+    "test_sitl_copter.yml",
+    "qurt_build.yml",
+    "test_chibios.yml",
+    "test_sitl_sub.yml",
+    "test_sitl_blimp.yml",
+    "esp32_build.yml",
+    "test_size.yml",
+    "test_ccache.yml",
+    "test_scripting.yml",
+    "test_sitl_tracker.yml",
+    "test_linux_sbc.yml",
+    "macos_build.yml",
+    "test_replay.yml",
+    "test_coverage.yml",
+    "colcon.yml",
+    "test_sitl_plane.yml",
+    "test_unit_tests.yml",
+    "test_dds.yml",
+    "test_scripts.yml"
+  ],
+  "automatic_workflows": [
+    "test_chibios.yml",
+    "test_unit_tests.yml",
+    "test_scripts.yml",
+    "test_scripting.yml",
+    "test_sitl_copter.yml",
+    "test_sitl_plane.yml",
+    "test_sitl_rover.yml",
+    "test_sitl_sub.yml",
+    "test_sitl_tracker.yml"
+  ]
+}
