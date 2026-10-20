@@ -1,0 +1,98 @@
+name: Validate pinned release candidate
+'on':
+  workflow_call:
+    inputs:
+      source_ref:
+        type: string
+        required: true
+      release_manifest:
+        type: string
+        required: true
+permissions:
+  contents: read
+  actions: write
+jobs:
+  test-chibios:
+    uses: ./.github/workflows/test_chibios.yml
+    with:
+      source_ref: ${{ inputs.source_ref }}
+      release_manifest: ${{ inputs.release_manifest }}
+  test-unit-tests:
+    uses: ./.github/workflows/test_unit_tests.yml
+    with:
+      source_ref: ${{ inputs.source_ref }}
+      release_manifest: ${{ inputs.release_manifest }}
+  test-scripts:
+    uses: ./.github/workflows/test_scripts.yml
+    with:
+      source_ref: ${{ inputs.source_ref }}
+      release_manifest: ${{ inputs.release_manifest }}
+  test-scripting:
+    uses: ./.github/workflows/test_scripting.yml
+    with:
+      source_ref: ${{ inputs.source_ref }}
+      release_manifest: ${{ inputs.release_manifest }}
+  test-sitl-copter:
+    uses: ./.github/workflows/test_sitl_copter.yml
+    with:
+      source_ref: ${{ inputs.source_ref }}
+      release_manifest: ${{ inputs.release_manifest }}
+    if: fromJSON(inputs.release_manifest).family == 'Copter'
+  test-sitl-plane:
+    uses: ./.github/workflows/test_sitl_plane.yml
+    with:
+      source_ref: ${{ inputs.source_ref }}
+      release_manifest: ${{ inputs.release_manifest }}
+    if: fromJSON(inputs.release_manifest).family == 'Plane'
+  test-sitl-rover:
+    uses: ./.github/workflows/test_sitl_rover.yml
+    with:
+      source_ref: ${{ inputs.source_ref }}
+      release_manifest: ${{ inputs.release_manifest }}
+    if: fromJSON(inputs.release_manifest).family == 'Rover'
+  test-sitl-sub:
+    uses: ./.github/workflows/test_sitl_sub.yml
+    with:
+      source_ref: ${{ inputs.source_ref }}
+      release_manifest: ${{ inputs.release_manifest }}
+    if: fromJSON(inputs.release_manifest).family == 'Sub'
+  test-sitl-tracker:
+    uses: ./.github/workflows/test_sitl_tracker.yml
+    with:
+      source_ref: ${{ inputs.source_ref }}
+      release_manifest: ${{ inputs.release_manifest }}
+    if: fromJSON(inputs.release_manifest).family == 'Tracker'
+  evidence:
+    needs:
+    - test-chibios
+    - test-unit-tests
+    - test-scripts
+    - test-scripting
+    - test-sitl-copter
+    - test-sitl-plane
+    - test-sitl-rover
+    - test-sitl-sub
+    - test-sitl-tracker
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ inputs.source_ref }}
+    - name: Record source and immutable artifact IDs/digests
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RELEASE_MANIFEST: ${{ inputs.release_manifest }}
+      run: python3 .github/release_policy/evidence.py record
+    - uses: actions/upload-artifact@v4
+      with:
+        name: release-evidence
+        path: release-evidence.json
+        if-no-files-found: error
+        retention-days: 90
+    - name: Publication remains blocked
+      run: echo 'Validated candidate only. No authorized downstream publisher is configured; existing gates are unchanged.'
+        >> "$GITHUB_STEP_SUMMARY"

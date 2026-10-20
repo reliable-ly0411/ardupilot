@@ -1,10 +1,26 @@
 name: test scripts
 
-on: [push, pull_request, workflow_dispatch]
+'on':
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Explicit manual source ref (blank uses selected workflow ref)
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Explicit manual source ref (blank uses selected workflow ref)
+        type: string
+        default: ''
+      release_manifest:
+        type: string
+        default: ''
+        description: Pinned manifest from the release gate; empty only for explicit manual builds
 
 concurrency:
-  group: ci-${{github.workflow}}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-test_scripts-${{github.workflow}}-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -29,8 +45,16 @@ jobs:
       # git checkout the PR
       - uses: actions/checkout@v7
         with:
+          fetch-depth: 0
+          ref: ${{ inputs.source_ref || github.sha }}
           submodules: false
           persist-credentials: false
+      - name: Reconstruct and verify pinned release source
+        if: inputs.release_manifest != ''
+        shell: bash
+        env:
+          RELEASE_MANIFEST: ${{ inputs.release_manifest }}
+        run: python3 .github/release_policy/policy.py materialize
 
       - name: checkout waf submodule
         run: git submodule update --init --recursive --depth 1 modules/waf

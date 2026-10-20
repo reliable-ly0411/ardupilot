@@ -1,15 +1,11 @@
 name: test coverage
 
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: '0 0 * * 0'  # every sunday at midnight
-# paths:
-# - "*"
-# - "!README.md" <-- don't rebuild on doc change
+'on':
+  workflow_dispatch: null
+
 concurrency:
-  group: ci-${{github.workflow}}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-test_coverage-${{github.workflow}}-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read  # checkout; jobs that save ccache add actions:write per-job

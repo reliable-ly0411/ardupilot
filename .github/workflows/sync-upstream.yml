@@ -1,64 +1,99 @@
 name: Sync upstream
-
 on:
   schedule:
     - cron: "17 2 * * 1"
   workflow_dispatch:
-
+    inputs:
+      action:
+        description: Sync only, or sync and inspect new formal releases
+        type: choice
+        options: [sync, check-releases]
+        default: sync
+      retry_release_id:
+        description: Explicit retry of one failed release ID (no historical backfill)
+        type: string
+        default: ''
 permissions:
-  contents: write
-
+  contents: read
+concurrency:
+  group: release-policy-master
+  cancel-in-progress: false
 jobs:
   sync:
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.release.outputs.build }}
+      release_id: ${{ steps.release.outputs.release_id }}
+      source_ref: ${{ steps.release.outputs.source_ref }}
+      manifest: ${{ steps.release.outputs.manifest }}
     steps:
-      - name: Checkout fork
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: master
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Merge upstream master
+      - name: Merge upstream without replacing local policy
+        env:
+          UPSTREAM: ArduPilot/ardupilot
+          TARGET_BRANCH: master
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/$UPSTREAM.git"
+          git fetch --no-tags upstream "$TARGET_BRANCH"
+          if ! git merge-base --is-ancestor "upstream/$TARGET_BRANCH" HEAD; then
+            if ! git merge --no-ff --no-commit "upstream/$TARGET_BRANCH"; then
+              mapfile -d '' -t conflicts < <(git diff --name-only --diff-filter=U -z)
+              (( ${#conflicts[@]} > 0 )) || exit 1
+              for path in "${conflicts[@]}"; do
+                case "$path" in
+                  .github/workflows/*|.github/release_policy/*) ;;
+                  *) echo "Manual conflict resolution required: $path"; exit 1 ;;
+                esac
+              done
+            fi
+            git restore --source=HEAD --staged --worktree -- .github/workflows .github/release_policy
+            git commit -m "CI: sync upstream while retaining downstream workflow policy"
+            git push origin "HEAD:$TARGET_BRANCH"
+          fi
+      - name: Unit-test the lightweight release detector
+        run: python3 -m unittest discover -s .github/release_policy -p 'test_*.py' -v
+      - name: Recognize one new formal release and pin source
+        id: release
+        if: github.event_name == 'schedule' || inputs.action == 'check-releases'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RETRY_ID: ${{ inputs.retry_release_id }}
+        run: python3 .github/release_policy/policy.py prepare --retry-id "$RETRY_ID"
+  build:
+    needs: sync
+    if: needs.sync.outputs.build == 'true'
+    permissions:
+      contents: read
+      actions: write
+    uses: ./.github/workflows/release-build.yml
+    with:
+      source_ref: ${{ needs.sync.outputs.source_ref }}
+      release_manifest: ${{ needs.sync.outputs.manifest }}
+  finish:
+    needs: [sync, build]
+    if: always() && needs.sync.outputs.build == 'true'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - name: Record exact outcome without publishing
+        env:
+          RELEASE_ID: ${{ needs.sync.outputs.release_id }}
+          BUILD_RESULT: ${{ needs.build.result }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote add upstream https://github.com/ArduPilot/ardupilot.git
-          git fetch upstream master
-          git checkout master
-          if git merge-base --is-ancestor upstream/master master; then
-            echo "Already up to date"
-            exit 0
-          fi
-
-          merge_status=0
-          git merge --no-ff --no-commit upstream/master || merge_status=$?
-          if [ "$merge_status" -ne 0 ]; then
-            conflicts="$(git diff --name-only --diff-filter=U)"
-            non_workflow_conflicts="$(printf '%s\n' "$conflicts" | grep -v '^.github/workflows/' || true)"
-            if [ -n "$non_workflow_conflicts" ]; then
-              echo "Merge has non-workflow conflicts:"
-              printf '%s\n' "$non_workflow_conflicts"
-              exit 1
-            fi
-
-            # fork 的工作流由本仓库维护；按 fork 当前状态解决工作流冲突。
-            printf '%s\n' "$conflicts" | while IFS= read -r path; do
-              [ -n "$path" ] || continue
-              if git cat-file -e "HEAD:$path" 2>/dev/null; then
-                git checkout --ours -- "$path"
-                git add -- "$path"
-              else
-                git rm -- "$path"
-              fi
-            done
-          fi
-
-          git restore --source=HEAD --staged --worktree -- .github/workflows
-          if git diff --cached --quiet && git diff --quiet; then
-            echo "Only upstream workflow changes; keeping fork workflow configuration"
-            git merge --abort
-            exit 0
-          fi
-
-          git commit -m "Sync upstream ArduPilot master"
-          git push origin master
+          python3 .github/release_policy/policy.py finish --release-id "$RELEASE_ID" --result "$BUILD_RESULT"
