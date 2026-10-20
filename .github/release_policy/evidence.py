@@ -44,6 +44,28 @@ def archive(repo, artifact):
     return data
 
 
+def verify_upstream(manifest):
+    upstream = manifest['upstream']
+    release_id = manifest['release_id']
+    if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', upstream):
+        raise ValueError('Invalid upstream repository in evidence')
+    if not re.fullmatch(r'[0-9]+', str(release_id)):
+        raise ValueError('Invalid upstream release ID in evidence')
+    release = api(f'repos/{upstream}/releases/{release_id}')
+    if release['draft'] or release['prerelease'] or release['tag_name'] != manifest['tag']:
+        raise ValueError('Upstream release is no longer formal or its tag was renamed')
+    refs = subprocess.check_output(
+        ['git', 'ls-remote', '--tags', 'https://github.com/' + upstream + '.git',
+         'refs/tags/' + manifest['tag'], 'refs/tags/' + manifest['tag'] + '^{}'], text=True)
+    sha = None
+    for line in refs.splitlines():
+        current, ref = line.split()
+        if sha is None or ref.endswith('^{}'):
+            sha = current
+    if sha != manifest['upstream_sha']:
+        raise ValueError('Upstream release tag moved or disappeared after candidate build')
+
+
 def record():
     repo = os.environ['GITHUB_REPOSITORY']
     run_id = os.environ['GITHUB_RUN_ID']
@@ -79,6 +101,7 @@ def verify():
     entry = state['releases'][evidence['manifest']['release_id']]
     if entry['status'] != 'built' or entry['run_id'] != run_id or entry['manifest'] != evidence['manifest']:
         raise ValueError('Candidate is not the successful immutable manifest in the release ledger')
+    verify_upstream(evidence['manifest'])
     by_id = {a['id']: a for a in files}
     for recorded in evidence['artifacts']:
         current = by_id.get(recorded['id'])

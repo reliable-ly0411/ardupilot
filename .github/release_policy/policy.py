@@ -47,14 +47,25 @@ def select_release(releases, state, config, resolve_tag, retry_id=None):
     """
     records = state['releases']
     candidates = []
+    tag_ids = {entry['tag']: rid for rid, entry in records.items()}
+    present_ids = {str(release['id']) for release in releases}
+    for rid, entry in records.items():
+        if rid not in present_ids and entry['status'] not in ('blocked', 'prerelease'):
+            entry.update(status='blocked', reason='Release was deleted or is no longer visible')
     for release in releases:
         rid = str(release['id'])
         tag = release['tag_name']
         old = records.get(rid)
+        if tag in tag_ids and tag_ids[tag] != rid:
+            records[rid] = {'tag': tag, 'status': 'blocked', 'reason': 'Tag reused by a different release ID'}
+            continue
+        tag_ids[tag] = rid
         if old and old['tag'] != tag:
             old.update(status='blocked', reason='Release tag was renamed')
             continue
         if release.get('draft') or release.get('prerelease'):
+            if old and old['status'] in ('building', 'failed', 'built'):
+                old.update(status='blocked', reason='Formal release status was revoked')
             if not old:
                 records[rid] = {'tag': tag, 'status': 'prerelease'}
             continue
@@ -65,6 +76,8 @@ def select_release(releases, state, config, resolve_tag, retry_id=None):
             records[rid] = {'tag': tag, 'status': 'baseline', 'upstream_sha': resolve_tag(tag)}
             continue
         if old and old['status'] in ('baseline', 'built', 'blocked'):
+            if old['status'] != 'blocked' and old.get('upstream_sha') and resolve_tag(tag) != old['upstream_sha']:
+                old.update(status='blocked', reason='Historical release tag moved or disappeared')
             continue
         if retry_id and rid != retry_id:
             continue
@@ -105,6 +118,8 @@ def load_state(config):
 
 def save_state(state, parent):
     """Append a commit to a dedicated branch; no force pushes, tags or workflows."""
+    if parent and json.loads(git('show', parent + ':' + STATE_FILE)) == state:
+        return parent
     base = parent or git('rev-parse', 'HEAD')
     data = json.dumps(state, indent=2, sort_keys=True) + '\n'
     blob = git('hash-object', '-w', '--stdin', data=data)
@@ -138,12 +153,21 @@ def prepare(retry_id=None):
     releases = [release for page in pages for release in page]
     if retry_id and state['releases'].get(retry_id, {}).get('status') not in ('failed', 'building'):
         raise ValueError('Only a failed/incomplete recognized release may be explicitly retried')
-    selected = select_release(releases, state, config, lambda tag: resolve_tag(config, tag), retry_id)
+    refs = git('ls-remote', '--tags', 'https://github.com/' + config['upstream'] + '.git')
+    tags = {}
+    for line in refs.splitlines():
+        sha, ref = line.split()
+        tag = ref.removeprefix('refs/tags/').removesuffix('^{}')
+        if ref.endswith('^{}') or tag not in tags:
+            tags[tag] = sha
+    selected = select_release(releases, state, config, tags.get, retry_id)
     output('build', 'false')
     if not selected:
         save_state(state, parent)
         return
     rid, entry = selected
+    if resolve_tag(config, entry['tag']) != entry['upstream_sha']:
+        raise ValueError('Release tag changed during source recognition')
     if 'manifest' not in entry:
         downstream = git('rev-parse', 'HEAD')
         git('fetch', '--no-tags', 'https://github.com/' + config['upstream'] + '.git', config['branch'])

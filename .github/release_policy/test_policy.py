@@ -88,6 +88,27 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(selected[0], '2')
         self.assertEqual(selected[1]['family'], '4.x')
 
+    def test_recreated_release_id_cannot_reuse_tag(self):
+        self.state['releases']['1'] = dict(tag='v1.0.0', status='built', upstream_sha=SHA)
+        self.assertIsNone(self.select([release(2)]))
+        self.assertEqual(self.state['releases']['2']['status'], 'blocked')
+
+    def test_historical_tag_movement_is_reported_blocked(self):
+        self.state['releases']['1'] = dict(tag='v1.0.0', status='baseline', upstream_sha='b' * 40)
+        self.assertIsNone(self.select([release()]))
+        self.assertEqual(self.state['releases']['1']['status'], 'blocked')
+
+    def test_deleted_release_is_blocked(self):
+        self.state['releases']['1'] = dict(tag='v1.0.0', status='built', upstream_sha=SHA)
+        self.assertIsNone(self.select([]))
+        self.assertEqual(self.state['releases']['1']['status'], 'blocked')
+
+    def test_revoked_stable_status_is_blocked(self):
+        self.state['releases']['1'] = dict(tag='v1.0.0', status='built', upstream_sha=SHA)
+        r = release(); r['prerelease'] = True
+        self.assertIsNone(self.select([r]))
+        self.assertEqual(self.state['releases']['1']['status'], 'blocked')
+
     def test_invalid_tag_commit_is_rejected(self):
         with self.assertRaises(ValueError):
             self.select([release()], sha='not-a-sha')
