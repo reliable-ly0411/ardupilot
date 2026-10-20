@@ -170,7 +170,8 @@ def prepare(retry_id=None):
         raise ValueError('Release tag changed during source recognition')
     if 'manifest' not in entry:
         downstream = git('rev-parse', 'HEAD')
-        git('fetch', '--no-recurse-submodules', '--no-tags', 'https://github.com/' + config['upstream'] + '.git', config['branch'])
+        git('fetch', '--no-recurse-submodules', '--no-tags',
+            'https://github.com/' + config['upstream'] + '.git', config['branch'])
         merge_base = git('merge-base', downstream, 'FETCH_HEAD')
         manifest = {'schema': 1, 'release_id': rid, 'tag': entry['tag'], 'family': entry['family'],
                     'upstream': config['upstream'], 'upstream_sha': entry['upstream_sha'],

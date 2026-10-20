@@ -43,7 +43,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream "https://github.com/$UPSTREAM.git"
-          git fetch --no-tags upstream "$TARGET_BRANCH"
+          git fetch --no-recurse-submodules --no-tags upstream "$TARGET_BRANCH"
           if ! git merge-base --is-ancestor "upstream/$TARGET_BRANCH" HEAD; then
             if ! git merge --no-ff --no-commit "upstream/$TARGET_BRANCH"; then
               mapfile -d '' -t conflicts < <(git diff --name-only --diff-filter=U -z)

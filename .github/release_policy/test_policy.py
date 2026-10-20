@@ -1,5 +1,6 @@
 """Policy regression tests. AP_FLAKE8_CLEAN"""
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -189,6 +190,41 @@ class MaterializationTests(unittest.TestCase):
         self.manifest['source_sha'] = 'f' * 40
         with patch.object(p, 'git', self.local_fetch), self.assertRaisesRegex(ValueError, 'source commit'):
             p.materialize(self.manifest, self.repo, update_submodules=False)
+
+
+class StateTests(unittest.TestCase):
+    def test_state_branch_is_append_only_and_unchanged_state_does_not_commit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            remote = str(Path(tmp) / 'remote.git')
+            work = Path(tmp) / 'work'
+            subprocess.run(['git', 'init', '--bare', remote], check=True, capture_output=True)
+            subprocess.run(['git', 'clone', remote, str(work)], check=True, capture_output=True)
+            old_cwd = os.getcwd()
+            os.chdir(work)
+            try:
+                p.git('config', 'user.name', 'Test')
+                p.git('config', 'user.email', 'test@localhost')
+                Path('source.txt').write_text('source must remain unchanged')
+                p.git('add', '.')
+                p.git('commit', '-m', 'source')
+                source_sha = p.git('rev-parse', 'HEAD')
+                p.git('push', 'origin', 'HEAD:refs/heads/main')
+                state = {'schema': 1, 'releases': {}}
+                p.save_state(state, None)
+                loaded, first = p.load_state({'baseline': {}})
+                self.assertEqual(loaded, state)
+                p.save_state(state, first)
+                self.assertEqual(p.load_state({'baseline': {}})[1], first)
+                state['releases']['1'] = {'tag': 'v1.0.0', 'status': 'built'}
+                p.save_state(state, first)
+                second = p.load_state({'baseline': {}})[1]
+                self.assertEqual(p.git('rev-parse', second + '^'), first)
+                self.assertEqual(p.git('ls-remote', 'origin', 'refs/heads/main').split()[0], source_sha)
+                # A stale concurrent writer must be rejected, not overwrite the newer ledger.
+                with self.assertRaises(subprocess.CalledProcessError):
+                    p.save_state({'schema': 1, 'releases': {'2': {'tag': 'v2.0.0'}}}, first)
+            finally:
+                os.chdir(old_cwd)
 
 
 if __name__ == '__main__':
