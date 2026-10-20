@@ -111,7 +111,7 @@ def load_state(config):
     refs = git('ls-remote', '--heads', 'origin', STATE_REF)
     if not refs:
         return new_state(config), None
-    git('fetch', '--no-tags', 'origin', STATE_REF)
+    git('fetch', '--no-recurse-submodules', '--no-tags', 'origin', STATE_REF)
     sha = git('rev-parse', 'FETCH_HEAD')
     return json.loads(git('show', sha + ':' + STATE_FILE)), sha
 
@@ -135,7 +135,7 @@ def save_state(state, parent):
 
 def resolve_tag(config, tag):
     git('check-ref-format', 'refs/tags/' + tag)
-    git('fetch', '--no-tags', 'https://github.com/' + config['upstream'] + '.git',
+    git('fetch', '--no-recurse-submodules', '--no-tags', 'https://github.com/' + config['upstream'] + '.git',
         'refs/tags/' + tag)
     return git('rev-parse', 'FETCH_HEAD^{commit}')
 
@@ -170,7 +170,7 @@ def prepare(retry_id=None):
         raise ValueError('Release tag changed during source recognition')
     if 'manifest' not in entry:
         downstream = git('rev-parse', 'HEAD')
-        git('fetch', '--no-tags', 'https://github.com/' + config['upstream'] + '.git', config['branch'])
+        git('fetch', '--no-recurse-submodules', '--no-tags', 'https://github.com/' + config['upstream'] + '.git', config['branch'])
         merge_base = git('merge-base', downstream, 'FETCH_HEAD')
         manifest = {'schema': 1, 'release_id': rid, 'tag': entry['tag'], 'family': entry['family'],
                     'upstream': config['upstream'], 'upstream_sha': entry['upstream_sha'],
@@ -217,7 +217,7 @@ def materialize(manifest, cwd=None, update_submodules=True):
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', manifest['upstream']):
         raise ValueError('Invalid upstream repository')
     git('check-ref-format', 'refs/tags/' + manifest['tag'], cwd=cwd)
-    git('fetch', '--no-tags', 'https://github.com/' + manifest['upstream'] + '.git',
+    git('fetch', '--no-recurse-submodules', '--no-tags', 'https://github.com/' + manifest['upstream'] + '.git',
         'refs/tags/' + manifest['tag'], cwd=cwd)
     if git('rev-parse', 'FETCH_HEAD^{commit}', cwd=cwd) != manifest['upstream_sha']:
         raise ValueError('Upstream release tag moved; refusing build')
