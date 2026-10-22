@@ -3694,10 +3694,10 @@ class TestSuite(abc.ABC):
         def __init__(self, suite):
             self.suite = suite
 
-        def process(self):
+        def process(self, mav, m) -> None:
             pass
 
-        def progress_prefix(self):
+        def progress_prefix(self) -> str:
             return ""
 
         def progress(self, string):
@@ -3717,10 +3717,10 @@ class TestSuite(abc.ABC):
             self.texts = texts
             self.regex = regex
 
-        def progress_prefix(self):
+        def progress_prefix(self) -> str:
             return "FFST: "
 
-        def process(self, mav, m):
+        def process(self, mav, m) -> None:
             if m.get_type() != 'STATUSTEXT':
                 return
 
@@ -3745,7 +3745,7 @@ class TestSuite(abc.ABC):
             self.last_print = 0
             self.min_print_interval = 1  # seconds
 
-        def progress_prefix(self):
+        def progress_prefix(self) -> str:
             return "VIPASS: "
 
         def process(self, mav, m):
@@ -5667,11 +5667,6 @@ class TestSuite(abc.ABC):
             if m.name != name:
                 continue
             return m
-
-    def assert_receive_named_value_float_value(self, name, value, epsilon=0.0001, timeout=10):
-        m = self.assert_receive_named_value_float_value(name, timeout=timeout)
-        if abs(m.value - value) > epsilon:
-            raise NotAchievedException("Bad %s want=%f got=%f" % (name, value, m.value))
 
     def assert_rally_files_same(self, file1, file2):
         self.progress("Comparing (%s) and (%s)" % (file1, file2, ))
@@ -19586,6 +19581,49 @@ SERIAL5_BAUD 128
                 continue
             on_radius_start_heading = None
             circle_time_start = now
+
+    def wait_circle_direction(self,
+                              centre_loc,
+                              radius_m,
+                              ccw,
+                              sweep_deg=180,
+                              epsilon_m=10,
+                              timeout=180):
+        '''wait for vehicle to travel sweep_deg around centre_loc, raising if
+        it travels in the wrong direction.  Bearing is only accumulated
+        while the vehicle is within epsilon_m of the circle, so the
+        flight out to the edge of the circle is not counted'''
+        direction_name = "counter-clockwise" if ccw else "clockwise"
+        self.progress("Waiting for %udeg of %s circle" % (sweep_deg, direction_name))
+        # bearing from the centre increases as the vehicle flies clockwise:
+        want_sign = -1 if ccw else 1
+        tstart = self.get_sim_time()
+        swept_deg = 0
+        last_bearing = None
+        while True:
+            if self.get_sim_time_cached() - tstart > timeout:
+                raise NotAchievedException("Did not circle %s" % direction_name)
+            m = self.assert_receive_message('GLOBAL_POSITION_INT')
+            here = Location.latlon_only(m.lat * 1e-7, m.lon * 1e-7)
+            got_radius_m = self.get_distance(centre_loc, here)
+            if abs(got_radius_m - radius_m) > epsilon_m:
+                # vehicle is not on the circle; start accumulating again
+                last_bearing = None
+                swept_deg = 0
+                continue
+            bearing = self.get_bearing(centre_loc, here)
+            if last_bearing is not None:
+                swept_deg += (bearing - last_bearing + 180) % 360 - 180
+                self.progress("radius=%0.1f/%0.1f bearing=%0.1f swept=%0.1f/%d" %
+                              (got_radius_m, radius_m, bearing, swept_deg, want_sign * sweep_deg))
+                if -want_sign * swept_deg > 20:
+                    raise NotAchievedException(
+                        "Circling in wrong direction (swept %0.1fdeg, wanted %s)" %
+                        (swept_deg, direction_name))
+                if want_sign * swept_deg > sweep_deg:
+                    self.progress("Swept %0.1fdeg %s" % (swept_deg, direction_name))
+                    return
+            last_bearing = bearing
 
     def create_junit_report(self, test_name: str, results: List[Result], skip_list: List[Tuple[Test, Dict[str, str]]]) -> None:
         """Generate Junit report from the autotest results"""
