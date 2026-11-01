@@ -69,6 +69,10 @@ def select_release(releases, state, config, resolve_tag, retry_id=None):
             if not old:
                 records[rid] = {'tag': tag, 'status': 'prerelease'}
             continue
+        if (old and old['status'] != 'prerelease' and old.get('published_at')
+                and old['published_at'] != release.get('published_at')):
+            old.update(status='blocked', reason='Formal release publication date changed')
+            continue
         family = family_for(tag, config)
         if not family or not release.get('published_at'):
             continue

@@ -29,7 +29,8 @@ class WorkflowPolicyTests(unittest.TestCase):
 
     def test_build_is_conditional_and_manual_sync_defaults_to_sync_only(self):
         text = (ROOT / 'workflows/sync-upstream.yml').read_text()
-        self.assertIn("if: needs.sync.outputs.build == 'true'", text)
+        self.assertIn("python3 .github/release_policy/source_mirror.py", text)
+        self.assertNotIn("uses: ./.github/workflows/release-build.yml", text)
         self.assertIn('default: sync', text)
         self.assertIn("github.event_name == 'schedule' || inputs.action == 'check-releases'", text)
         self.assertNotIn('workflow_run:', text)
