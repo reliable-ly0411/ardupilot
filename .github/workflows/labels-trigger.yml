@@ -15,6 +15,7 @@ concurrency:
 
 jobs:
   trigger:
+    if: github.repository == 'ArduPilot/ardupilot'
     name: Trigger
     runs-on: ubuntu-slim
     permissions: {}
