@@ -3773,6 +3773,35 @@ class TestSuite(abc.ABC):
         def hook_removed(self):
             self.progress(f"Maximum divergence was {self.max_divergence}m (max={self.max_allowed_divergence}m)")
 
+    def wait_simstate_divergence_below(self, maximum, minimum_duration=0, timeout=60):
+        """wait for the EKF's reported position to agree with the simulator's
+        to within `maximum` metres, held for `minimum_duration` seconds.
+
+        A gate for tests which arm as soon as the vehicle is armable and
+        then assert on position: the filter may still be converging, and
+        the residual lands in whatever the test measures next."""
+        tstart = self.get_sim_time()
+        good_since = None
+        divergence = None
+        while True:
+            now = self.get_sim_time_cached()
+            if now - tstart > timeout:
+                raise NotAchievedException(
+                    "position still %s from simstate after %us" %
+                    ("%.2fm" % divergence if divergence is not None else "unknown",
+                     timeout))
+            gpi = self.assert_receive_message('GLOBAL_POSITION_INT')
+            simstate = self.assert_receive_message('SIMSTATE')
+            divergence = self.get_distance_int(gpi, simstate)
+            if divergence > maximum:
+                good_since = None
+                continue
+            if good_since is None:
+                good_since = now
+                self.progress("position within %.2fm of simstate" % divergence)
+            if now - good_since >= minimum_duration:
+                return
+
     class ValidateGlobalPositionIntAgainstSimState(ValidateIntPositionAgainstSimState):
         def __init__(self, suite, **kwargs):
             super(TestSuite.ValidateGlobalPositionIntAgainstSimState, self).__init__(suite, 'GLOBAL_POSITION_INT', **kwargs)
@@ -6320,13 +6349,13 @@ class TestSuite(abc.ABC):
             timeout=30
         )
 
-    def armed(self, cached=False):
+    def armed(self, cached=False, poll=True):
         """Return True if vehicle is armed and safetyoff"""
         m = None
         if cached:
             m = self.mav.messages.get("HEARTBEAT", None)
         if m is None:
-            m = self.wait_heartbeat()
+            m = self.wait_heartbeat(poll=poll)
         return (m.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED) != 0
 
     def send_mavlink_arm_command(self):
@@ -7862,7 +7891,13 @@ class TestSuite(abc.ABC):
         self.progress("Changing mode to %s" % mode)
         tstart = self.get_sim_time()
         self.send_cmd_do_set_mode(mode)
-        while not self.mode_is(mode):
+        # the polled heartbeat is generated after the command is
+        # processed, so a successful change is seen without waiting
+        # for a scheduled heartbeat.  If the vehicle refuses the mode
+        # change, pace the resends on the scheduled heartbeat instead:
+        poll = True
+        while not self.mode_is(mode, poll=poll):
+            poll = False
             custom_num = self.mav.messages['HEARTBEAT'].custom_mode
             self.progress("mav.flightmode=%s Want=%s custom=%u" % (
                 self.mav.flightmode, mode, custom_num))
@@ -9143,6 +9178,85 @@ class TestSuite(abc.ABC):
             raise NotAchievedException("Expected %s to be %u got %u" %
                                        (channel, value, m_value))
 
+    def radio_rc_channels_value_to_pwm(self, value):
+        '''convert a RADIO_RC_CHANNELS channel value (centered 13-bit; range
+        [-4096,4096], centre 0) into the PWM value ArduPilot derives from
+        it.  Mirrors AP_RCProtocol_MAVLinkRadio, including C's
+        truncation-towards-zero integer division.'''
+        scaled = value * 5
+        if scaled < 0:
+            return 1500 - ((-scaled) // 32)
+        return 1500 + (scaled // 32)
+
+    def send_radio_rc_channels(self, values, flags=0, count=None, time_last_update_ms=0):
+        '''send a RADIO_RC_CHANNELS message; values are in the centered
+        13-bit format the message specifies.  The message always carries 32
+        channels, so count - which defaults to the number of values supplied
+        - is the only thing saying how many of them are real.'''
+        if len(values) > 32:
+            raise ValueError("RADIO_RC_CHANNELS carries at most 32 channels")
+        if count is None:
+            count = len(values)
+        channels = list(values) + [0] * (32 - len(values))
+        self.mav.mav.radio_rc_channels_send(
+            self.mav.target_system,
+            self.mav.target_component,
+            time_last_update_ms,
+            flags,
+            count,
+            channels,
+        )
+
+    def radio_rc_channels_pump(self, values, flags, mtype, check, timeout, what, count=None):
+        '''feed RADIO_RC_CHANNELS messages to the vehicle until check()
+        returns True for a received message of type mtype.  The frames have
+        to keep flowing while we wait, or the vehicle simply loses RC.'''
+        tstart = self.get_sim_time()
+        while True:
+            if self.get_sim_time_cached() - tstart > timeout:
+                raise NotAchievedException("Timed out waiting for %s" % what)
+            self.send_radio_rc_channels(values, flags=flags, count=count)
+            m = self.mav.recv_match(type=mtype, blocking=True, timeout=0.05)
+            if m is None:
+                continue
+            if check(m):
+                return m
+
+    def assert_radio_rc_channels_maintains(self, values, flags, mtype, check, duration, what, count=None):
+        '''feed RADIO_RC_CHANNELS messages to the vehicle for duration
+        seconds, failing if check() is ever False for a received message of
+        type mtype - or if no such message turns up at all, which would
+        otherwise pass vacuously'''
+        seen = False
+        tstart = self.get_sim_time()
+        while self.get_sim_time_cached() - tstart < duration:
+            self.send_radio_rc_channels(values, flags=flags, count=count)
+            m = self.mav.recv_match(type=mtype, blocking=True, timeout=0.05)
+            if m is None:
+                continue
+            seen = True
+            if not check(m):
+                raise NotAchievedException(what)
+        if not seen:
+            raise NotAchievedException("No %s received while checking for %s" % (mtype, what))
+
+    def wait_radio_rc_channels_pwm(self, values, expected_pwm, expected_chancount, count=None, timeout=20):
+        '''feed RADIO_RC_CHANNELS until RC_CHANNELS reports expected_pwm in
+        its first len(expected_pwm) channels'''
+        def check(m):
+            if m.chancount != expected_chancount:
+                self.progress("RC_CHANNELS chancount=%u want=%u" %
+                              (m.chancount, expected_chancount))
+                return False
+            got = [getattr(m, "chan%u_raw" % (i+1)) for i in range(len(expected_pwm))]
+            if got != expected_pwm:
+                self.progress("RC_CHANNELS got=%s want=%s" % (got, expected_pwm))
+                return False
+            return True
+        return self.radio_rc_channels_pump(
+            values, 0, 'RC_CHANNELS', check, timeout,
+            "RC_CHANNELS to match RADIO_RC_CHANNELS", count=count)
+
     def _rc_overrides_send_single(self, chan, pwm):
         '''Send RC_CHANNELS_OVERRIDE targeting a single channel; others are UINT16_MAX (ignore)'''
         channels = [65535] * 18
@@ -9297,7 +9411,7 @@ class TestSuite(abc.ABC):
             wp_dist_m = m.wp_dist
 
             # if we changed mode, fail
-            if not self.mode_is('AUTO'):
+            if not self.mode_is('AUTO', poll=False):
                 self.progress(f"{self.mav.flightmode} vs {self.get_mode_from_mode_mapping(mode)}")
                 ignore_mode_change = (
                     (ignore_RTL_mode_change and self.mode_is('RTL', cached=True)) or
@@ -9336,16 +9450,18 @@ class TestSuite(abc.ABC):
         '''returns the most-recently received instance of message_type'''
         return self.mav.messages[message_type]
 
-    def mode_is(self, mode, cached=False, drain_mav=True, drain_mav_quietly=True):
+    def mode_is(self, mode, cached=False, drain_mav=True, drain_mav_quietly=True, poll=True):
         if not cached:
-            self.wait_heartbeat(drain_mav=drain_mav, quiet=drain_mav_quietly)
+            self.wait_heartbeat(drain_mav=drain_mav, quiet=drain_mav_quietly, poll=poll)
         return self.mav.messages['HEARTBEAT'].custom_mode == self.get_mode_from_mode_mapping(mode)
 
     def wait_mode(self, mode, timeout=60):
         """Wait for mode to change."""
         self.progress("Waiting for mode %s" % mode)
         tstart = self.get_sim_time()
-        while not self.mode_is(mode, drain_mav=False):
+        # poll=False: pace this loop on the scheduled heartbeat lest
+        # we spin at poll-round-trip rate, printing as we go
+        while not self.mode_is(mode, drain_mav=False, poll=False):
             custom_num = self.mav.messages['HEARTBEAT'].custom_mode
             self.progress("mav.flightmode=%s Want=%s custom=%u" % (
                 self.mav.flightmode, mode, custom_num))
@@ -9584,11 +9700,13 @@ class TestSuite(abc.ABC):
         self.total_waiting_to_arm_time += armable_time
         self.waiting_to_arm_count += 1
 
-    def wait_heartbeat(self, drain_mav=True, quiet=False, *args, **x):
+    def wait_heartbeat(self, drain_mav=True, quiet=False, poll=False, *args, **x):
         '''as opposed to mav.wait_heartbeat, raises an exception on timeout.
 Also, ignores heartbeats not from our target system'''
         if drain_mav:
             self.drain_mav(quiet=quiet)
+        if poll:
+            self.send_poll_message('HEARTBEAT', quiet=True)
         orig_timeout = x.get("timeout", 20)
         x["timeout"] = 1
         tstart = time.time()
@@ -10918,7 +11036,14 @@ Also, ignores heartbeats not from our target system'''
 
         # HOME_POSITION is used as a surrogate for origin until we
         # start emitting GPS_GLOBAL_ORIGIN
-        self.wait_ekf_happy()
+        #
+        # the filter will not use GPS until the gyro bias is learned,
+        # which on Tracker takes 43 to 45.7 simulated seconds from
+        # boot.  This budget is counted from here rather than from
+        # boot, so the default 45 leaves only whatever the test spent
+        # getting this far - under four seconds in the tightest case
+        # measured.
+        self.wait_ekf_happy(timeout=120)
         orig_home = self.poll_home_position()
         if orig_home is None:
             raise AutoTestTimeoutException()
@@ -11415,7 +11540,6 @@ Also, ignores heartbeats not from our target system'''
             self.check_zero_mag_parameters(params)
             self.check_zeros_mag_orient()
             self.progress("Send acceptation and check value")
-            self.wait_heartbeat()
             self.run_cmd(
                 mavutil.mavlink.MAV_CMD_DO_ACCEPT_MAG_CAL,
                 p1=target_mask, # p1: mag_mask
@@ -12239,7 +12363,6 @@ Also, ignores heartbeats not from our target system'''
                 raise NotAchievedException(
                     "Disarmed with rudder when ARMING_RUDDER=0")
             self.disarm_vehicle()
-            self.wait_heartbeat()
             self.start_subtest("Test disarming failure with ARMING_RUDDER=1")
             self.set_parameter("ARMING_RUDDER", 1)
             self.arm_vehicle()
@@ -12251,7 +12374,6 @@ Also, ignores heartbeats not from our target system'''
                 raise NotAchievedException(
                     "Disarmed with rudder with ARMING_RUDDER=1")
             self.disarm_vehicle()
-            self.wait_heartbeat()
             self.set_parameter("ARMING_RUDDER", 2)
 
             if self.is_copter():
@@ -12271,7 +12393,6 @@ Also, ignores heartbeats not from our target system'''
                 if self.armed():
                     raise NotAchievedException("Armed with switch when interlock enabled")
                 self.disarm_vehicle()
-                self.wait_heartbeat()
                 self.set_rc(arming_switch, 1000)
                 self.set_rc(interlock_channel, 1000)
                 if self.is_heli():
@@ -12341,7 +12462,6 @@ Also, ignores heartbeats not from our target system'''
                 self.wait_ekf_happy()
                 self.change_mode(mode)
                 self.arm_vehicle()
-                self.wait_heartbeat()
                 self.disarm_vehicle()
                 self.progress("PASS arm mode : %s" % mode)
                 self.progress("Not armable mode without Position : %s" % mode)
@@ -12552,6 +12672,8 @@ Also, ignores heartbeats not from our target system'''
             raise NotAchievedException("Did not read same interval back from autopilot: want=%d got=%d)" %
                                        (want, m.interval_us))
         m = self.assert_receive_message('COMMAND_ACK', mav=mav)
+        if m.command != mavutil.mavlink.MAV_CMD_GET_MESSAGE_INTERVAL:
+            raise NotAchievedException("ACK not for GET_MESSAGE_INTERVAL (got=%u)" % m.command)
         if m.result != mavutil.mavlink.MAV_RESULT_ACCEPTED:
             raise NotAchievedException("Expected ACCEPTED for reading message interval")
 
@@ -12668,6 +12790,8 @@ Also, ignores heartbeats not from our target system'''
             if m.interval_us != 0:
                 raise NotAchievedException("Supposed to get 0 back for unsupported stream")
             m = self.assert_receive_message('COMMAND_ACK')
+            if m.command != mavutil.mavlink.MAV_CMD_GET_MESSAGE_INTERVAL:
+                raise NotAchievedException("ACK not for GET_MESSAGE_INTERVAL (got=%u)" % m.command)
             if m.result != mavutil.mavlink.MAV_RESULT_FAILED:
                 raise NotAchievedException("Getting rate of unsupported message is a failure")
 

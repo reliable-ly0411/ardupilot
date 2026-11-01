@@ -2618,7 +2618,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                 self.progress("Push time up")
                 break
             # make sure we don't RTL:
-            if not self.mode_is(using_mode):
+            if not self.mode_is(using_mode, poll=False):
                 raise NotAchievedException("Changed mode away from %s" % using_mode)
             distance = self.distance_to_home(use_cached_home=True)
             inner_radius = fence_radius - fence_margin
@@ -2709,7 +2709,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
         self.progress("Waiting for fence breach")
         tstart = self.get_sim_time()
-        while not self.mode_is("RTL"):
+        while not self.mode_is("RTL", poll=False):
             if self.get_sim_time_cached() - tstart > 30:
                 raise NotAchievedException("Did not breach fence")
 
@@ -3226,7 +3226,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.wait_statustext("Circle and Polygon fences in ([0-9]+[.])?[0-9]?m", regex=True)
         self.progress("Waiting for fence breach")
         tstart = self.get_sim_time()
-        while not self.mode_is("RTL"):
+        while not self.mode_is("RTL", poll=False):
             if self.get_sim_time_cached() - tstart > 30:
                 raise NotAchievedException("Did not breach fence")
 
@@ -3265,6 +3265,32 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         raise AutoTestTimeoutException(
             "Fence test failed to reach home (%fm distance) - "
             "timed out after %u seconds" % (home_distance, timeout,))
+
+    def FenceMarginTypeChange(self):
+        '''Test removing a margin-breached fence from FENCE_TYPE in flight'''
+        self.set_parameters({
+            "FENCE_ENABLE": 1,
+            "FENCE_TYPE": 2,    # circle fence
+            "FENCE_RADIUS": 50,
+            "FENCE_MARGIN": 5,
+            "AVOID_ENABLE": 0,
+            "FENCE_OPTIONS": 4,  # notify on margin breach
+        })
+        self.context_collect('STATUSTEXT')
+
+        self.takeoff(10, mode="GUIDED")
+        # inside the circle fence but within its margin:
+        self.fly_guided_move_local(47.5, 0, 10)
+        self.wait_statustext("Circle fence in", check_context=True)
+
+        self.progress("Replacing the circle fence with a polygon fence")
+        self.set_parameter("FENCE_TYPE", 4)
+        # only the fence whose margin breach was cleared should be
+        # named; the whole complemented FENCE_TYPE mask used to be
+        # reported, indexing off the end of the fence names table
+        self.wait_statustext("Circle fence cleared margin breach", check_context=True)
+
+        self.do_RTL()
 
     def FenceUpload_MissionItem(self, timeout=180):
         '''Test MISSION_ITEM fence upload/download'''
@@ -6270,7 +6296,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         # ensure vehicle remain in Loiter for 15 seconds
         tstart = self.get_sim_time()
         while self.get_sim_time() - tstart < 15:
-            if not self.mode_is('LOITER'):
+            if not self.mode_is('LOITER', poll=False):
                 raise NotAchievedException("Expected to stay in loiter for >15 seconds")
 
         # re-enable vicon
@@ -6283,7 +6309,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         # ensure vehicle remain in Loiter for 15 seconds
         tstart = self.get_sim_time()
         while self.get_sim_time() - tstart < 15:
-            if not self.mode_is('LOITER'):
+            if not self.mode_is('LOITER', poll=False):
                 raise NotAchievedException("Expected to stay in loiter for >15 seconds")
 
         # RTL and check vehicle arrives within 10m of home
@@ -6351,7 +6377,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         tstart = self.get_sim_time()
         last_mission_current_msg = 0
         last_seq = None
-        while self.armed(): # we RTL at end of mission
+        while self.armed(poll=False): # we RTL at end of mission
             now = self.get_sim_time_cached()
             if now - tstart > 200:
                 raise AutoTestTimeoutException("Did not disarm as expected")
@@ -7150,7 +7176,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.set_rc(3, 1600)
         count_stop = -1
         tstart = self.get_sim_time()
-        while self.armed(): # we RTL at end of mission
+        while self.armed(poll=False): # we RTL at end of mission
             now = self.get_sim_time_cached()
             if now - tstart > 240:
                 raise AutoTestTimeoutException("Did not disarm as expected")
@@ -7190,7 +7216,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         # should not take off for about least 77 seconds
         tstart = self.get_sim_time()
         took_off = False
-        while self.armed():
+        while self.armed(poll=False):
             now = self.get_sim_time_cached()
             if now - tstart > 200:
                 # timeout
@@ -8584,7 +8610,13 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.set_mount_mode(mavutil.mavlink.MAV_MOUNT_MODE_NEUTRAL)
             self.test_mount_pitch(0, 0.1, mavutil.mavlink.MAV_MOUNT_MODE_NEUTRAL)
 
-            self.disarm_vehicle(force=True)
+            # land so the body-yaw subtest takes off from the ground.
+            # After a force-disarm in the air it re-armed shortly after
+            # the falling vehicle hit the ground, and polling
+            # change_mode() and armed() moved that re-arm closer still
+            # to the impact; the vehicle then never got home:
+            #     Mount/MountTopotek: "Did not get home"
+            self.land_and_disarm()
 
             self.test_mount_body_yaw()
 
@@ -20241,7 +20273,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         while True:
             if self.get_sim_time_cached() - tstart > 60:
                 break
-            if self.armed():
+            if self.armed(poll=False):
                 raise NotAchievedException("Armed after reboot with switch high")
             armmsg = self.statustext_in_collections('Arm: ')
             if armmsg is not None:
@@ -22180,6 +22212,71 @@ RTL_ALT_M 111
         self.wait_waypoint(num_wp-1, num_wp-1, timeout=120)
         self.wait_disarmed(timeout=60)
 
+    def ScriptingOSDDrawScreen(self):
+        '''a script's draw_screen(), writes and flush() reach the OSD as one frame'''
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "SERIAL5_PROTOCOL": 42,  # MSP DisplayPort
+            "OSD_TYPE": 5,           # MSP DisplayPort
+        })
+        self.install_script_content_context("osd_draw_screen.lua", """
+local function update()
+    osd:draw_screen()
+    osd:write(1, 1, "SCRIPTED")
+    osd:flush()
+    return update, 100
+end
+return update()
+""")
+        port = self.spare_network_port()
+        self.customise_SITL_commandline([
+            "--serial5=tcp:%u" % port
+        ])
+        msp = self.msp_connect(port)
+
+        MSP_DISPLAYPORT = 182
+        CLEAR_SCREEN = 2
+        WRITE_STRING = 3
+        DRAW_SCREEN = 4
+        frames = []
+        writes = []
+        cleared = False
+
+        def collect(cmd, data):
+            nonlocal cleared
+            if cmd != MSP_DISPLAYPORT or len(data) == 0:
+                return
+            if data[0] == CLEAR_SCREEN:
+                writes.clear()
+                cleared = True
+            elif not cleared:
+                # joined part way through a frame
+                return
+            elif data[0] == WRITE_STRING:
+                writes.append(bytes(data[4:]))
+            elif data[0] == DRAW_SCREEN:
+                frames.append(list(writes))
+        msp.callback = collect
+        tstart = self.get_sim_time()
+        try:
+            while self.get_sim_time_cached() - tstart < 5:
+                msp.update()
+                self.drain_mav(quiet=True)
+        finally:
+            msp.callback = None
+
+        if len(frames) < 20:
+            raise NotAchievedException("only %u OSD frames drawn" % len(frames))
+        without_script = [f for f in frames if not any(b"SCRIPTED" in w for w in f)]
+        if len(without_script) > 0:
+            raise NotAchievedException("%u of %u OSD frames drawn without the script's text" %
+                                       (len(without_script), len(frames)))
+        script_only = [f for f in frames if len(f) < 2]
+        if len(script_only) > 0:
+            raise NotAchievedException("%u of %u OSD frames carry the script's text without the normal screen" %
+                                       (len(script_only), len(frames)))
+        self.progress("%u OSD frames, every one with the normal screen and the script's text" % len(frames))
+
     def ScriptingOSD(self):
         '''test OSD scripting with waypoint mission - requires SFML OSD'''
         # This test requires SITL to be built with SFML support:
@@ -22235,6 +22332,77 @@ RTL_ALT_M 111
 
         # Wait for mission to complete (land and disarm)
         self.wait_disarmed(timeout=180)
+
+    def ScriptingOSDDisplayPortReplies(self):
+        '''a VTX on MSP DisplayPort is still answered while a script draws the OSD'''
+        # A VTX such as a DJI O4 polls MSP_STATUS for the arm bit, and only the OSD
+        # thread can read the DisplayPort uart, so it must answer while a script holds
+        # the OSD. SITL lets any thread read a uart, so this fails when nothing answers
+        # but cannot see a build that answers from the script's own thread.
+        self.context_collect('STATUSTEXT')
+        self.install_script_content_context("osd_draw.lua", '''
+local function update()
+    osd:draw_screen()
+    osd:write(1, 1, "SCRIPT")
+    osd:flush()
+    return update, 100
+end
+gcs:send_text(6, "osd draw script running")
+return update()
+''')
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "SERIAL5_PROTOCOL": 42,  # MSP DisplayPort
+            "OSD_TYPE": 5,           # MSP DisplayPort
+        })
+        port = self.spare_network_port()
+        self.customise_SITL_commandline(["--serial5=tcp:%u" % port])
+        self.wait_statustext("osd draw script running", check_context=True)
+        self.wait_ready_to_arm()
+        # faster than real time this client cannot drain the redraws, and a reply that
+        # does not fit in the transmit buffer is dropped
+        self.context_set_speedup(1)
+        msp = self.msp_connect(port)
+        arm_bits = []
+        script_draws = []
+
+        def collect(cmd, data):
+            if cmd == 101 and len(data) >= 10:  # MSP_STATUS flight mode flags, bit 0 armed
+                arm_bits.append(int.from_bytes(bytes(data[6:10]), 'little') & 1)
+            if cmd == 182 and len(data) > 4 and data[0] == 3 and bytes(data[4:]).startswith(b"SCRIPT"):
+                script_draws.append(1)  # MSP_DISPLAYPORT write string, from the script
+
+        msp.callback = collect
+
+        def arm_bit():
+            # the last reply of the window, as the first may answer a poll sent before
+            del arm_bits[:]
+            del script_draws[:]
+            tstart = self.get_sim_time()
+            next_poll = tstart
+            while self.get_sim_time_cached() - tstart < 3:
+                if self.get_sim_time_cached() >= next_poll:
+                    msp.send_command(101)
+                    next_poll += 0.1
+                msp.update()
+                self.drain_mav()
+            # the script must still hold the OSD, or the normal OSD would be answering
+            if len(script_draws) < 10:
+                raise NotAchievedException("the script drew %u times in 3 s" % len(script_draws))
+            if len(arm_bits) < 10:
+                raise NotAchievedException("%u MSP_STATUS replies in 3 s while a script draws the OSD" % len(arm_bits))
+            return arm_bits[-1]
+
+        if arm_bit() != 0:
+            raise NotAchievedException("arm bit set while disarmed")
+        self.change_mode('STABILIZE')
+        self.arm_vehicle()
+        if arm_bit() != 1:
+            raise NotAchievedException("arm bit not set while armed")
+        self.disarm_vehicle()
+        if arm_bit() != 0:
+            raise NotAchievedException("arm bit still set after disarming")
+        msp.callback = None
 
     def RTLYaw(self):
         '''test that vehicle yaws to original heading on RTL'''
@@ -23868,6 +24036,8 @@ return update, 1000
             self.GuidedForceArm,
             self.AHRSOriginRecorded,
             self.ScriptingOSD,
+            self.ScriptingOSDDisplayPortReplies,
+            self.ScriptingOSDDrawScreen,
             self.TestEKF3CompassFailover,
             self.EKF3SRCPerCore,
         ])
@@ -23884,6 +24054,7 @@ return update, 1000
             self.MinAltFence,
             self.FenceFloorAutoDisableLanding,
             self.FenceMargin,
+            self.FenceMarginTypeChange,
             self.GPSGlitchAuto,
             self.GPSGlitchVelocity,
             self.MotorFail,
