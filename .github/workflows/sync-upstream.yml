@@ -20,14 +20,10 @@ concurrency:
   cancel-in-progress: false
 jobs:
   sync:
+    if: github.repository == 'reliable-ly0411/ardupilot'
     permissions:
       contents: write
     runs-on: ubuntu-latest
-    outputs:
-      build: ${{ steps.release.outputs.build }}
-      release_id: ${{ steps.release.outputs.release_id }}
-      source_ref: ${{ steps.release.outputs.source_ref }}
-      manifest: ${{ steps.release.outputs.manifest }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -61,39 +57,10 @@ jobs:
           fi
       - name: Unit-test the lightweight release detector
         run: python3 -m unittest discover -s .github/release_policy -p 'test_*.py' -v
-      - name: Recognize one new formal release and pin source
+      - name: Mirror one new formal source release (no firmware)
         id: release
         if: github.event_name == 'schedule' || inputs.action == 'check-releases'
         env:
           GH_TOKEN: ${{ github.token }}
           RETRY_ID: ${{ inputs.retry_release_id }}
-        run: python3 .github/release_policy/policy.py prepare --retry-id "$RETRY_ID"
-  build:
-    needs: sync
-    if: needs.sync.outputs.build == 'true'
-    permissions:
-      contents: read
-      actions: write
-    uses: ./.github/workflows/release-build.yml
-    with:
-      source_ref: ${{ needs.sync.outputs.source_ref }}
-      release_manifest: ${{ needs.sync.outputs.manifest }}
-  finish:
-    needs: [sync, build]
-    if: always() && needs.sync.outputs.build == 'true'
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: master
-          fetch-depth: 0
-      - name: Record exact outcome without publishing
-        env:
-          RELEASE_ID: ${{ needs.sync.outputs.release_id }}
-          BUILD_RESULT: ${{ needs.build.result }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          python3 .github/release_policy/policy.py finish --release-id "$RELEASE_ID" --result "$BUILD_RESULT"
+        run: python3 .github/release_policy/source_mirror.py
