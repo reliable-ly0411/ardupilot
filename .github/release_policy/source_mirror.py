@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import subprocess
+
 from pathlib import Path
 
 import policy
@@ -62,7 +63,7 @@ def mirror(config, rid, entry):
         raise ValueError('Downstream same-name tag differs; never overwrite')
     body = release_body(release, sha)
     pages = json.loads(policy.command('gh', 'api', '--paginate', '--slurp',
-                                     f'repos/{REPOSITORY}/releases?per_page=100'))
+                                      f'repos/{REPOSITORY}/releases?per_page=100'))
     releases = [r for page in pages for r in page]
     matching = [r for r in releases if r['tag_name'] == tag]
     if matching:
