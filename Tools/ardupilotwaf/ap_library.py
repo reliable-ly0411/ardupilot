@@ -89,14 +89,18 @@ def _depends_on_vehicle(bld, source_node):
     return _depends_on_vehicle_cache[path]
 
 @conf
-def ap_library(bld, library, vehicle):
+def ap_library(bld, library, vehicle, build_type=None):
+    # vehicle-dependent objects are compiled once per build type, so
+    # copter and heli (both from ArduCopter) do not share them
+    variant = build_type or vehicle
+
     try:
         common_tg = bld.get_tgen_by_name(_common_tgen_name(library))
     except Errors.WafError:
         common_tg = None
 
     try:
-        vehicle_tg = bld.get_tgen_by_name(_vehicle_tgen_name(library, vehicle))
+        vehicle_tg = bld.get_tgen_by_name(_vehicle_tgen_name(library, variant))
     except Errors.WafError:
         vehicle_tg = None
 
@@ -141,10 +145,10 @@ def ap_library(bld, library, vehicle):
         kw = dict(bld.env.AP_LIBRARIES_OBJECTS_KW)
         kw['features'] = kw.get('features', []) + ['ap_library_object']
         kw.update(
-            name=_vehicle_tgen_name(library, vehicle),
+            name=_vehicle_tgen_name(library, variant),
             source=source,
-            defines=ap.get_legacy_defines(vehicle, bld),
-            idx=_vehicle_index(vehicle),
+            defines=ap.get_legacy_defines(vehicle, build_type),
+            idx=_vehicle_index(variant),
         )
         bld.objects(**kw)
 
@@ -154,11 +158,12 @@ def process_ap_libraries(self):
     self.use = Utils.to_list(getattr(self, 'use', []))
     libraries = Utils.to_list(getattr(self, 'ap_libraries', []))
     vehicle = getattr(self, 'ap_vehicle', None)
+    variant = getattr(self, 'ap_build_type', None) or vehicle
 
     for l in libraries:
         self.use.append(_common_tgen_name(l))
         if vehicle:
-            self.use.append(_vehicle_tgen_name(l, vehicle))
+            self.use.append(_vehicle_tgen_name(l, variant))
 
 @before_method('process_source')
 @feature('cxxstlib', 'ap_dynamic_source')
@@ -257,10 +262,12 @@ def custom_flags_check(tgen):
     if not tgen.name.startswith("objs/"):
         return
     libname = tgen.name[5:]
+    # append_value() copies the list into this task generator's env first,
+    # extend() would also change the list it shares with every other one
     if libname in tgen.env.AP_LIB_EXTRA_CXXFLAGS:
-        tgen.env.CXXFLAGS.extend(tgen.env.AP_LIB_EXTRA_CXXFLAGS[libname])
+        tgen.env.append_value('CXXFLAGS', tgen.env.AP_LIB_EXTRA_CXXFLAGS[libname])
     if libname in tgen.env.AP_LIB_EXTRA_CFLAGS:
-        tgen.env.CFLAGS.extend(tgen.env.AP_LIB_EXTRA_CFLAGS[libname])
+        tgen.env.append_value('CFLAGS', tgen.env.AP_LIB_EXTRA_CFLAGS[libname])
 
 
 def double_precision_check(tasks):
