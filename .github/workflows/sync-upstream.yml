@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: Sync only, or sync and inspect new formal releases
+        description: Sync all branches and tags, optionally inspect new formal releases
         type: choice
         options: [sync, check-releases]
         default: sync
@@ -20,16 +20,20 @@ concurrency:
   cancel-in-progress: false
 jobs:
   sync:
-    if: github.repository == 'reliable-ly0411/ardupilot'
+    if: github.repository == 'reliable-ly0411/ardupilot' && github.ref == 'refs/heads/master'
     permissions:
       contents: write
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
           ref: master
           fetch-depth: 0
-      - name: Merge upstream without replacing local policy
+      - name: Test synchronization and source-only release safeguards
+        run: python3 -m unittest discover -s .github/release_policy -p 'test_*.py' -v
+      - name: Prepare master merge without replacing local policy
+        id: merge
         env:
           UPSTREAM: ArduPilot/ardupilot
           TARGET_BRANCH: master
@@ -38,6 +42,7 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          echo "master_before=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           git remote add upstream "https://github.com/$UPSTREAM.git"
           git fetch --no-recurse-submodules --no-tags upstream "$TARGET_BRANCH"
           if ! git merge-base --is-ancestor "upstream/$TARGET_BRANCH" HEAD; then
@@ -53,10 +58,11 @@ jobs:
             fi
             git restore --source=HEAD --staged --worktree -- .github/workflows .github/release_policy
             git commit -m "CI: sync upstream while retaining downstream workflow policy"
-            git push origin "HEAD:$TARGET_BRANCH"
           fi
-      - name: Unit-test the lightweight release detector
-        run: python3 -m unittest discover -s .github/release_policy -p 'test_*.py' -v
+      - name: Synchronize all upstream branches and tags atomically
+        env:
+          EXPECTED_MASTER: ${{ steps.merge.outputs.master_before }}
+        run: python3 .github/release_policy/sync_refs.py --expected-master "$EXPECTED_MASTER" --apply
       - name: Mirror one new formal source release (no firmware)
         id: release
         if: github.event_name == 'schedule' || inputs.action == 'check-releases'

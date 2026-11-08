@@ -40,7 +40,7 @@ class SourceMirrorTests(unittest.TestCase):
 
     def test_annotated_tag_checks_peeled_commit(self):
         refs = 'b' * 40 + ' refs/tags/Copter-9.0.0\n' + self.sha + ' refs/tags/Copter-9.0.0^{}'
-        _, calls, _ = self.run_mirror(refs=refs)
+        _, calls, _ = self.run_mirror(refs=refs, tag_object='b' * 40)
         self.assertFalse(any(c.args[0] == 'push' for c in calls))
 
     def test_selector_preserves_first_recognition_date_on_retry(self):
@@ -58,11 +58,21 @@ class SourceMirrorTests(unittest.TestCase):
         self.assertEqual(entry['status'], 'blocked')
         self.assertEqual(entry['published_at'], self.entry['published_at'])
 
-    def run_mirror(self, refs='', existing=None, sha=None, license_text='GNU GENERAL PUBLIC LICENSE'):
+    def run_mirror(self, refs='', existing=None, sha=None, license_text='GNU GENERAL PUBLIC LICENSE',
+                   tag_object=None, changed_tag_object=None, verification_refs=None):
+        tag_object = tag_object or self.sha
+        object_reads = 0
+
         def git(*args):
+            nonlocal object_reads
             if args[0] == 'show':
                 return license_text
+            if args[0] == 'rev-parse':
+                object_reads += 1
+                return changed_tag_object if changed_tag_object and object_reads > 1 else tag_object
             if args[0] == 'ls-remote':
+                if '--refs' in args:
+                    return verification_refs if verification_refs is not None else tag_object + ' refs/tags/Copter-9.0.0'
                 return refs
             return ''
         with patch.object(m.policy, 'git', side_effect=git) as g, \
@@ -73,14 +83,34 @@ class SourceMirrorTests(unittest.TestCase):
             result = m.mirror({'upstream': m.UPSTREAM}, '123', self.entry)
             return result, g.call_args_list, a.call_args_list
 
-    def test_missing_tag_created_without_force_and_source_release_only(self):
+    def test_missing_tag_created_with_absent_lease_and_source_release_only(self):
         result, calls, api_calls = self.run_mirror()
         self.assertEqual(result, 'https://example/release')
-        self.assertIn(('push', 'origin', self.sha + ':refs/tags/Copter-9.0.0'), [c.args for c in calls])
+        self.assertIn(('push', '--atomic', '--force-with-lease=refs/tags/Copter-9.0.0:',
+                       'origin', self.sha + ':refs/tags/Copter-9.0.0'), [c.args for c in calls])
         payload = api_calls[-1].args[1]
         self.assertFalse(payload['draft'])
         self.assertFalse(payload['prerelease'])
         self.assertNotIn('assets', payload)
+
+    def test_new_annotated_tag_after_sync_keeps_direct_object(self):
+        _, calls, _ = self.run_mirror(tag_object='b' * 40)
+        pushes = [c.args for c in calls if c.args[0] == 'push']
+        self.assertEqual(pushes, [('push', '--atomic', '--force-with-lease=refs/tags/Copter-9.0.0:',
+                                  'origin', 'b' * 40 + ':refs/tags/Copter-9.0.0')])
+
+    def test_same_commit_different_annotated_object_is_never_overwritten(self):
+        refs = 'c' * 40 + ' refs/tags/Copter-9.0.0\n' + self.sha + ' refs/tags/Copter-9.0.0^{}'
+        with self.assertRaisesRegex(ValueError, 'never overwrite'):
+            self.run_mirror(refs=refs, tag_object='b' * 40)
+
+    def test_upstream_annotation_change_before_publication_blocks(self):
+        with self.assertRaisesRegex(ValueError, 'changed before publication'):
+            self.run_mirror(tag_object='b' * 40, changed_tag_object='c' * 40)
+
+    def test_downstream_tag_change_before_publication_blocks(self):
+        with self.assertRaisesRegex(ValueError, 'Downstream tag changed'):
+            self.run_mirror(verification_refs='c' * 40 + ' refs/tags/Copter-9.0.0')
 
     def test_moved_upstream_blocks(self):
         with self.assertRaisesRegex(ValueError, 'Upstream tag moved'):

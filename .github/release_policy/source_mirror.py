@@ -49,17 +49,19 @@ def mirror(config, rid, entry):
     sha = policy.resolve_tag(config, tag)
     if sha != entry['upstream_sha']:
         raise ValueError('Upstream tag moved')
+    tag_object = policy.git('rev-parse', '--verify', 'FETCH_HEAD')
+    tag_ref = 'refs/tags/' + tag
     # The unchanged commit supplies original licensing in GitHub source archives.
     license_text = policy.git('show', sha + ':COPYING.txt')
     if 'GNU GENERAL PUBLIC LICENSE' not in license_text:
         raise ValueError('Original source license is missing or unrecognized')
-    refs = policy.git('ls-remote', '--tags', 'origin', 'refs/tags/' + tag, 'refs/tags/' + tag + '^{}')
+    refs = policy.git('ls-remote', '--tags', 'origin', tag_ref, tag_ref + '^{}')
     existing = {}
     for line in refs.splitlines():
         value, name = line.split()
         existing[name] = value
-    peeled = existing.get('refs/tags/' + tag + '^{}', existing.get('refs/tags/' + tag))
-    if peeled and peeled != sha:
+    peeled = existing.get(tag_ref + '^{}', existing.get(tag_ref))
+    if peeled and (peeled != sha or existing.get(tag_ref) != tag_object):
         raise ValueError('Downstream same-name tag differs; never overwrite')
     body = release_body(release, sha)
     pages = json.loads(policy.command('gh', 'api', '--paginate', '--slurp',
@@ -76,10 +78,17 @@ def mirror(config, rid, entry):
         return matching[0]['html_url']
     # Recheck immediately before publication; a changed upstream ID/tag fails closed.
     verify_release(api(f'repos/{UPSTREAM}/releases/{rid}'), entry, rid)
-    if policy.resolve_tag(config, tag) != sha:
+    if (policy.resolve_tag(config, tag) != sha
+            or policy.git('rev-parse', '--verify', 'FETCH_HEAD') != tag_object):
         raise ValueError('Upstream tag changed before publication')
     if not peeled:
-        policy.git('push', 'origin', sha + ':refs/tags/' + tag)
+        # A formal tag can appear after the all-ref sync snapshot. Preserve its
+        # original annotated object and require that the destination is absent.
+        policy.git('push', '--atomic', '--force-with-lease=' + tag_ref + ':',
+                   'origin', tag_object + ':' + tag_ref)
+    current = policy.git('ls-remote', '--refs', 'origin', tag_ref).splitlines()
+    if len(current) != 1 or current[0].split() != [tag_object, tag_ref]:
+        raise ValueError('Downstream tag changed before source publication')
     result = api(f'repos/{REPOSITORY}/releases', {
         'tag_name': tag, 'name': release.get('name') or tag, 'body': body,
         'draft': False, 'prerelease': False, 'make_latest': 'false',

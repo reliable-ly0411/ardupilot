@@ -36,6 +36,31 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertNotIn('workflow_run:', text)
         self.assertIn('cancel-in-progress: false', text)
 
+    def test_full_sync_is_guarded_and_master_has_no_early_push(self):
+        text = (ROOT / 'workflows/sync-upstream.yml').read_text()
+        self.assertIn("github.repository == 'reliable-ly0411/ardupilot' && github.ref == 'refs/heads/master'", text)
+        self.assertIn('cron: "43 4 * * *"', text)
+        self.assertIn('group: release-policy-master', text)
+        self.assertIn('timeout-minutes: 20', text)
+        self.assertIn('id: merge', text)
+        self.assertIn('master_before=$(git rev-parse HEAD)', text)
+        self.assertIn('EXPECTED_MASTER: ${{ steps.merge.outputs.master_before }}', text)
+        self.assertIn('sync_refs.py --expected-master "$EXPECTED_MASTER" --apply', text)
+        self.assertNotIn('git push origin', text)
+        self.assertNotIn('git push --mirror', text)
+        self.assertNotIn('git push --tags', text)
+        self.assertNotIn('git push --force', text)
+
+    def test_sync_tests_precede_master_preparation_and_atomic_push(self):
+        text = (ROOT / 'workflows/sync-upstream.yml').read_text()
+        tests = text.index('python3 -m unittest discover')
+        merge = text.index('id: merge')
+        atomic_push = text.index('sync_refs.py --expected-master')
+        source_release = text.index('python3 .github/release_policy/source_mirror.py')
+        self.assertLess(tests, merge)
+        self.assertLess(merge, atomic_push)
+        self.assertLess(atomic_push, source_release)
+
     def test_publication_interface_does_not_rebuild_or_publish(self):
         text = (ROOT / 'workflows/promote-release.yml').read_text()
         self.assertIn('evidence.py verify', text)
