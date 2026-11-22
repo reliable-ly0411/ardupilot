@@ -276,9 +276,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         """Wait for level flight."""
         tstart = self.get_sim_time()
         self.progress("Waiting for level flight")
-        self.set_rc(1, 1500)
-        self.set_rc(2, 1500)
-        self.set_rc(4, 1500)
+        self.set_rc_from_map({1: 1500, 2: 1500, 4: 1500})
         while self.get_sim_time_cached() < tstart + timeout:
             m = self.assert_receive_message('ATTITUDE')
             roll = math.degrees(m.roll)
@@ -446,8 +444,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
     def test_stabilize(self, count=1):
         """Fly stabilize mode."""
         # full throttle!
-        self.set_rc(3, 2000)
-        self.set_rc(2, 1300)
+        self.set_rc_from_map({3: 2000, 2: 1300})
         self.change_altitude(300, relative=True)
         self.set_rc(2, 1500)
 
@@ -472,8 +469,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
     def test_acro(self, count=1):
         """Fly ACRO mode."""
         # full throttle!
-        self.set_rc(3, 2000)
-        self.set_rc(2, 1300)
+        self.set_rc_from_map({3: 2000, 2: 1300})
         self.change_altitude(300, relative=True)
         self.set_rc(2, 1500)
 
@@ -513,8 +509,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
     def test_FBWB(self, mode='FBWB'):
         """Fly FBWB or CRUISE mode."""
         self.change_mode(mode)
-        self.set_rc(3, 1700)
-        self.set_rc(2, 1500)
+        self.set_rc_from_map({3: 1700, 2: 1500})
 
         # lock in the altitude by asking for an altitude change then releasing
         self.set_rc(2, 1000)
@@ -1461,8 +1456,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
 
         self.start_subtest("Not use RC throttle input when THR_FAILSAFE==2")
         self.takeoff(100)
-        self.set_rc(3, 1800)
-        self.set_rc(1, 2000)
+        self.set_rc_from_map({3: 1800, 1: 2000})
         self.wait_attitude(desroll=45, timeout=1)
         self.context_push()
         self.set_parameters({
@@ -1566,16 +1560,16 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.set_heartbeat_rate(self.speedup)
         self.end_subtest("Completed RTL Failsafe test")
 
-        self.start_subtest("Test Failsafe: FBWA Glide")
+        self.start_subtest("Test Failsafe: Glide")
         self.set_parameters({
             "FS_LONG_ACTN": 2,
         })
         self.change_mode('AUTO')
         self.progress("Disconnecting GCS")
         self.set_heartbeat_rate(0)
-        self.wait_mode("FBWA", timeout=10)
+        self.wait_mode(27, timeout=10)  # Glide, need pymavlink support to use text name
         self.set_heartbeat_rate(self.speedup)
-        self.end_subtest("Completed FBWA Failsafe test")
+        self.end_subtest("Completed Glide Failsafe test")
 
         self.start_subtest("Test Failsafe: Deploy Parachute")
         self.load_mission("plane-parachute-mission.txt")
@@ -1589,6 +1583,74 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.disarm_vehicle(force=True)
         self.reboot_sitl()
         self.end_subtest("Completed Parachute Failsafe test")
+
+    def GlideFailsafeThrottle(self):
+        '''Ensure throttle is forced to zero in the glide failsafe and pilot authority returns on recovery'''
+        self.set_parameters({
+            "FS_SHORT_ACTN": 2,  # short failsafe action: glide
+            "FS_LONG_ACTN": 2,   # long failsafe action: glide, so we stay in the glide
+            "THR_MIN": 20,       # non-zero so a zeroed throttle is distinct from throttle min
+        })
+        self.takeoff(50, mode='TAKEOFF')
+        # TAKEOFF takes no short failsafe action, CRUISE does and holds altitude on auto throttle
+        self.change_mode('CRUISE')
+        self.context_collect('STATUSTEXT')
+        self.progress("Failing receiver to trigger glide failsafe")
+        self.set_parameter("SIM_RC_FAIL", 1)  # no pulses
+        self.wait_statustext("RC Short Failsafe: switched to Glide", check_context=True)
+        self.wait_mode(27)  # Glide, need pymavlink support to use text name
+        self.drain_mav()  # make sure we have the latest throttle output
+        # throttle must be forced to zero (SERVO3_MIN), not held at THR_MIN
+        self.assert_servo_channel_value(3, self.get_parameter("SERVO3_MIN"))
+
+        self.progress("Waiting for long failsafe, we should stay in the glide")
+        self.wait_statustext("RC Long Failsafe On", check_context=True)
+        self.assert_mode(27)
+
+        self.progress("Restoring receiver, long failsafe does not restore the mode")
+        self.set_parameter("SIM_RC_FAIL", 0)
+        self.wait_statustext("RC Long Failsafe Cleared", check_context=True)
+        self.assert_mode(27)
+
+        self.progress("Pilot must be able to leave the glide and regain throttle")
+        self.change_mode("FBWA")
+        self.set_rc(3, 1800)
+        self.wait_servo_channel_value(3, 1500, comparator=operator.ge, timeout=5)
+        self.set_rc(3, 1500)
+        self.fly_home_land_and_disarm()
+
+    def GlideFailsafeThrottleReverse(self):
+        '''Ensure reverse thrust goes to zero, not full reverse, in the glide failsafe'''
+        # the reverse thrust sim model interprets throttle as an angle
+        # output: 1000 = full reverse, 1500 = zero thrust, 2000 = full forward
+        self.customise_SITL_commandline([], model="plane-revthrust", wipe=True)
+        self.set_parameters({
+            "THR_MIN": -100,      # negative THR_MIN enables reverse thrust
+            "SERVO3_MIN": 1000,
+            "SERVO3_TRIM": 1500,  # zero-thrust point for a reversible ESC
+            "SERVO3_MAX": 2000,
+            "FS_SHORT_ACTN": 2,   # short failsafe action: glide
+            "FS_LONG_ACTN": 2,    # long failsafe action: glide, so we stay in the glide
+        })
+        # take off in TAKEOFF mode: auto throttle avoids the reverse-thrust
+        # stick mapping and never commands reverse during the climb
+        self.takeoff(50, mode='TAKEOFF')
+        # TAKEOFF takes no short failsafe action, CRUISE does and holds altitude on auto throttle
+        self.change_mode('CRUISE')
+        self.context_collect('STATUSTEXT')
+        self.progress("Failing receiver to trigger glide failsafe")
+        self.set_parameter("SIM_RC_FAIL", 1)  # no pulses
+        self.wait_statustext("RC Short Failsafe: switched to Glide", check_context=True)
+        self.wait_mode(27)  # Glide, need pymavlink support to use text name
+        self.drain_mav()  # make sure we have the latest throttle output
+
+        def within_10(got, want):
+            return abs(got - want) <= 10
+
+        # zero thrust is SERVO3_TRIM (1500); the FBWA glide drove full reverse (SERVO3_MIN, 1000)
+        self.assert_servo_channel_value(3, self.get_parameter("SERVO3_TRIM"), comparator=within_10)
+        self.set_parameter("SIM_RC_FAIL", 0)
+        self.fly_home_land_and_disarm()
 
     def TestGripperMission(self):
         '''Test Gripper mission items'''
@@ -2558,8 +2620,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.set_parameter("FLTMODE1", 1)  # circle
         self.set_rc(8, 950)
         self.wait_mode("CIRCLE")
-        self.set_rc(9, 1000)
-        self.set_rc(10, 1000)
+        self.set_rc_from_map({9: 1000, 10: 1000})
         self.set_parameters({
             "RC9_OPTION": 4, # RTL
             "RC10_OPTION": 55, # guided
@@ -2570,8 +2631,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.wait_mode("GUIDED")
 
         self.progress("resetting both switches - should go back to CIRCLE")
-        self.set_rc(9, 1000)
-        self.set_rc(10, 1000)
+        self.set_rc_from_map({9: 1000, 10: 1000})
         self.wait_mode("CIRCLE")
 
         self.set_rc(9, 1900)
@@ -3695,6 +3755,75 @@ return update()
                 "AHRS trim changed the horizontal wind estimate: speed baseline=%.2f trimmed=%.2f" %
                 (baseline_spd, trimmed_spd))
         self.fly_home_land_and_disarm()
+
+    def AHRSTrimMission(self):
+        '''fly an AUTO mission (with turns) with a board pitch mounting offset
+        corrected by AHRS_TRIM_Y, checking the logged attitude against
+        simulator truth in the turns.
+
+        AHRS_TRIM rotates the published attitude from the autopilot-body
+        frame into the vehicle-body frame, and that attitude feeds the
+        attitude and navigation controllers.  A single-axis AHRS_TRIM_Y is
+        common on Plane; when banked the trim mixes into more than one euler
+        axis, so compare ATT with SIM (vehicle-body truth) while banked.
+        '''
+        trim_rad = math.radians(5)
+        self.set_parameters({
+            "SIM_BRD_TRIM_Y": trim_rad,  # physical board pitch mounting offset
+            "AHRS_TRIM_Y": trim_rad,     # corrected by the AHRS trim
+        })
+        self.reboot_sitl()
+        # a square circuit (four turns), then home to auto-land.  The
+        # home corner is offset slightly from home because a zero offset
+        # is uploaded as zero lat/lng, which Plane takes as the current
+        # position:
+        self.start_flying_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0, 0, 60),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 400, 0, 60),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 400, 400, 60),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 0, 400, 60),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 10, 10, 60),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 400, 10, 60),
+        ])
+        # item 0 is home, so the corners are items 2 to 5.  Item 6
+        # becomes current as the turn at item 5 begins; wait for that
+        # turn onto the northbound leg to finish:
+        self.wait_current_waypoint(6, timeout=180)
+        self.wait_heading(0, accuracy=10, timeout=60)
+        self.fly_home_land_and_disarm(timeout=240)
+
+        # ATT and SIM are written back-to-back in the same logging cycle,
+        # so pair each SIM with the ATT preceding it:
+        dfreader = self.dfreader_for_current_onboard_log()
+        att = None
+        count = 0
+        pitch_error_sum = 0.0
+        yaw_error_sum = 0.0
+        while True:
+            m = dfreader.recv_match(type=['ATT', 'SIM'])
+            if m is None:
+                break
+            if m.get_type() == 'ATT':
+                att = m
+                continue
+            sim = m
+            if att is None or sim.TimeUS - att.TimeUS > 20000:
+                continue
+            if abs(sim.Roll) < 20:
+                continue
+            count += 1
+            pitch_error_sum += abs(att.Pitch - sim.Pitch)
+            yaw_error_sum += abs(mavextra.wrap_180(att.Yaw - sim.Yaw))
+        if count < 100:
+            raise NotAchievedException(f"Only {count} ATT/SIM samples banked 20deg or more")
+        pitch_error = pitch_error_sum / count
+        yaw_error = yaw_error_sum / count
+        self.progress(f"banked: {count} samples, mean pitch error {pitch_error:.2f}deg, "
+                      f"mean yaw error {yaw_error:.2f}deg")
+        if pitch_error > 0.75 or yaw_error > 1.5:
+            raise NotAchievedException(
+                f"Trimmed attitude does not match truth while banked "
+                f"(pitch {pitch_error:.2f}deg, yaw {yaw_error:.2f}deg)")
 
     def WindMessageSpeed(self):
         '''Test that WIND.speed is horizontal (ground-plane) speed only'''
@@ -5270,8 +5399,7 @@ return update()
 
         self.progress("Fly above ceiling and check there is a breach")
         self.change_mode('FBWA')
-        self.set_rc(3, 2000)
-        self.set_rc(2, 1000)
+        self.set_rc_from_map({3: 2000, 2: 1000})
 
         self.wait_statustext("Max Alt fence breached", timeout=10, check_context=True)
         self.wait_mode('RTL')
@@ -5280,8 +5408,7 @@ return update()
         if (m.onboard_control_sensors_health & fence_bit):
             raise NotAchievedException("Fence ceiling not breached")
 
-        self.set_rc(3, 1500)
-        self.set_rc(2, 1500)
+        self.set_rc_from_map({3: 1500, 2: 1500})
 
         self.progress("Wait for RTL alt reached")
         self.wait_altitude(cruise_alt-5, cruise_alt+5, relative=True, timeout=30)
@@ -5302,15 +5429,13 @@ return update()
             "FENCE_ACTION": 8,   # Set action to AUTOLAND if possible
         })
 
-        self.set_rc(3, 2000)
-        self.set_rc(2, 1000)
+        self.set_rc_from_map({3: 2000, 2: 1000})
 
         self.wait_statustext("Max Alt fence breached", timeout=10, check_context=True)
-        self.wait_mode(26) # AUTOLAND,need pymavlink .43 to use text name
+        self.wait_mode("AUTOLAND")
         self.assert_fence_sys_status(True, True, False)
 
-        self.set_rc(3, 1500)
-        self.set_rc(2, 1500)
+        self.set_rc_from_map({3: 1500, 2: 1500})
 
         self.progress("Wait for cruise alt reached")
         self.wait_altitude(
@@ -6002,8 +6127,37 @@ return update()
         self.arm_vehicle()
         self.wait_text("Autoland direction", check_context=True)
         self.wait_waypoint(2, 2, max_dist_to_final_wp_m=100)
-        self.change_mode(26) # AUTOLAND need .43 pymavlink to use text name
+        self.change_mode("AUTOLAND")
         self.wait_disarmed(400)
+        self.progress("Check TECS target at start of landing approach")
+        dfreader = self.dfreader_for_current_onboard_log()
+        last_tecs_target = None
+        checking_tecs_target = False
+        saw_tecs_target = False
+        checked_tecs_target = False
+        while True:
+            m = dfreader.recv_match(type=['MSG', 'TECS'])
+            if m is None:
+                break
+            if m.get_type() == 'MSG':
+                if m.Message.startswith("Landing approach start"):
+                    checking_tecs_target = True
+                    saw_tecs_target = False
+                elif m.Message.startswith("Landing glide slope"):
+                    checked_tecs_target = checking_tecs_target and saw_tecs_target
+                    checking_tecs_target = False
+            else:
+                if checking_tecs_target:
+                    saw_tecs_target = True
+                    if last_tecs_target is None:
+                        raise NotAchievedException("No TECS target before landing approach start")
+                    if abs(m.hin - last_tecs_target) > 5:
+                        raise NotAchievedException(
+                            "TECS height target changed at landing approach start: %f to %f" %
+                            (last_tecs_target, m.hin))
+                last_tecs_target = m.hin
+        if not checked_tecs_target:
+            raise NotAchievedException("Did not check TECS target before landing glide slope")
         self.progress("Check the landed heading matches takeoff plus offset")
         self.wait_heading(218, accuracy=5, timeout=1)
         loc = Location.latlon_only(-35.362938, 149.165085)
@@ -6740,11 +6894,12 @@ return update()
 
         self.fly_home_land_and_disarm()
 
-    def TakeoffGround(self):
-        '''Test a rolling TAKEOFF.'''
+    def takeoff_ground(self, gnd_pitch):
+        '''Do a rolling TAKEOFF with the given TKOFF_GND_PITCH.'''
 
         self.set_parameters({
             "TKOFF_ROTATE_SPD": 15.0,
+            "TKOFF_GND_PITCH": gnd_pitch,
             "TKOFF_PLIM_SEC": 0,  # Ensure TKOFF_PLIM_SEC doesn't interfere with the test.
             "TKOFF_DIST": 500,  # Ensure stall prevention doesn't interfere with the test.
             "TKOFF_ALT": 100  # Ditto
@@ -6758,8 +6913,9 @@ return update()
         self.wait_groundspeed(8, 10)
         m = self.assert_receive_message('NAV_CONTROLLER_OUTPUT', timeout=5)
         nav_pitch = m.nav_pitch
-        if nav_pitch > 5.1 or nav_pitch < 4.9:
+        if abs(nav_pitch - gnd_pitch) > 0.1:
             raise NotAchievedException(f"Did not achieve correct takeoff pitch ({nav_pitch}).")
+        ground_roll_time = self.get_sim_time()
 
         # Check whether we've achieved correct target pitch after rotation.
         self.wait_groundspeed(24, 25)
@@ -6769,6 +6925,33 @@ return update()
             raise NotAchievedException(f"Did not achieve correct takeoff pitch ({nav_pitch}).")
 
         self.fly_home_land_and_disarm()
+
+        # Check that the TECS pitch limits were the ground pitch in the
+        # last second before the ground roll check.
+        dfreader = self.dfreader_for_current_onboard_log()
+        count = 0
+        while True:
+            m = dfreader.recv_match(type='TECS')
+            if m is None:
+                break
+            t = m.TimeUS * 1e-6
+            if t < ground_roll_time - 1 or t > ground_roll_time:
+                continue
+            count += 1
+            for (name, value) in (("pmin", m.pmin), ("pmax", m.pmax)):
+                if abs(math.degrees(value) - gnd_pitch) > 0.1:
+                    raise NotAchievedException(
+                        f"TECS {name} is {math.degrees(value):.2f} deg, want {gnd_pitch}")
+        if count == 0:
+            raise NotAchievedException("No TECS messages in the ground roll")
+
+    def TakeoffGround(self):
+        '''Test a rolling TAKEOFF.'''
+        self.takeoff_ground(5)
+
+    def TakeoffGroundNegativePitch(self):
+        '''Test a rolling TAKEOFF with a negative ground pitch.'''
+        self.takeoff_ground(-2)
 
     def TakeoffIdleThrottle(self):
         '''Apply idle throttle before takeoff.'''
@@ -9877,6 +10060,7 @@ return update()
             16: "Initialising",
             24: "Thermal",
             26: "Autoland",
+            27: "Glide",
         }
         initialising = self.get_mode_from_mode_mapping("INITIALISING")
         modes = self.assert_available_modes(expected_modes, not_user_selectable=[initialising])
@@ -9887,8 +10071,9 @@ return update()
         self.start_subtest("modes blocked by FLTMODE_GCSBLOCK are not user-selectable")
         circle = self.get_mode_from_mode_mapping("CIRCLE")
         guided = self.get_mode_from_mode_mapping("GUIDED")
-        self.set_parameter("FLTMODE_GCSBLOCK", (1 << 1) | (1 << 13))  # CIRCLE and GUIDED
-        self.assert_available_modes(expected_modes, not_user_selectable=[initialising, circle, guided])
+        glide = 27  # Glide, need pymavlink support to use text name
+        self.set_parameter("FLTMODE_GCSBLOCK", (1 << 1) | (1 << 13) | (1 << 22))  # CIRCLE, GUIDED and Glide
+        self.assert_available_modes(expected_modes, not_user_selectable=[initialising, circle, guided, glide])
         self.set_parameter("FLTMODE_GCSBLOCK", 0)
 
         self.start_subtest("request the first and last modes by index")
@@ -10907,6 +11092,7 @@ return update()
             self.TakeoffAuto4,
             self.TakeoffTakeoff1,
             self.TakeoffGround,
+            self.TakeoffGroundNegativePitch,
             self.MAVFTP,
             self.MAVFTPListDirectoryFullPacket,
             self.MAVFTPMavLogDirectory,
@@ -10927,11 +11113,14 @@ return update()
             self.SpeedToFly,
             self.RunMissionScript,
             self.WindEstimatesTrim,
+            self.AHRSTrimMission,
             self.AirspeedCal,
             self.AirspeedScripting,
             self.MissionJumpTags,
             self.JumpBestLandSequence,
             Test(self.GCSFailsafe, speedup=8),
+            self.GlideFailsafeThrottle,
+            self.GlideFailsafeThrottleReverse,
             self.RudderArmedTakeoffRequiresNeutralThrottle,
             self.MAV_CMD_DO_AUTOTUNE_ENABLE,
             self.MAV_CMD_NAV_ALTITUDE_WAIT,

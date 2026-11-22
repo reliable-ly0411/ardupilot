@@ -79,12 +79,14 @@ function install_mavproxy() {
         pushd /tmp
           git clone https://github.com/ardupilot/MAVProxy --depth 1
           pushd MAVProxy
-            python3 -m pip install --progress-bar off --cache-dir /tmp/pip-cache --user --force .
+            python3 -m pip install --progress-bar off --cache-dir /tmp/pip-cache --user --force --no-deps .
           popd
         popd
+        # MAVProxy's core dependencies only; its map3d ones (vtk,
+        # opencv-python, matplotlib, ...) are ~270MB that autotest
+        # never imports.  pymavlink comes from our submodule
+        python3 -m pip install --progress-bar off --cache-dir /tmp/pip-cache --user defusedxml pyserial numpy pynmeagps
         mavproxy_installed=1
-        # now uninstall the version of pymavlink pulled in by MAVProxy deps:
-        python3 -m pip uninstall -y pymavlink --cache-dir /tmp/pip-cache
     fi
     if [ "$CI" = "true" ]; then
       echo "::endgroup::"
@@ -441,6 +443,17 @@ for t in $CI_BUILD_TARGET; do
         $waf configure --board CubeOrange --enable-EKF2
         $waf clean
         $waf copter
+        continue
+    fi
+
+    if [ "$t" == "mavlink-deprecations" ]; then
+        echo "Building CubeOrangePlus without WIP/deprecated/superseded MAVLink messages"
+        $waf configure --board CubeOrangePlus \
+             --extra-hwdef=Tools/autotest/mavlink-deprecations.hwdef
+        $waf clean
+        $waf copter plane rover sub antennatracker blimp
+        # heli shares objects with copter, so build it separately:
+        $waf heli
         continue
     fi
 

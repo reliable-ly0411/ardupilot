@@ -421,7 +421,19 @@ void NavEKF3_core::InitialiseVariablesMag()
     allMagSensorsFailed = false;
     finalInflightMagInit = false;
     inhibitMagStates = true;
-    magSelectIndex = dal.compass().get_first_usable();
+
+    // initialise compass index
+    // if affinity is enabled try to use the compass corresponding to this core index
+    const auto &compass = dal.compass();
+    if ((frontend->_affinity & EKF_AFFINITY_MAG) &&
+        core_index < compass.get_count() &&
+        compass.healthy(core_index) &&
+        compass.use_for_yaw(core_index)) {
+        magSelectIndex = core_index;
+    } else {
+        magSelectIndex = compass.get_first_usable();
+    }
+
     lastMagOffsetsValid = false;
     magStateResetRequest = false;
     magStateInitComplete = false;
@@ -519,6 +531,9 @@ bool NavEKF3_core::InitialiseFilterBootstrap(void)
     stateStruct.wind_vel.zero();
     stateStruct.earth_magfield.zero();
     stateStruct.body_magfield.zero();
+
+    // clear the learned body magnetic field
+    learnedMagField.clear();
 
     // set the position, velocity and height
     ResetVelocity(resetDataSource::DEFAULT);

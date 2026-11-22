@@ -309,6 +309,30 @@ class AutoTestRover(vehicle_test_suite.TestSuite):
         }, check_context=True, very_verbose=True)
         self.context_pop()
 
+        self.start_subtest("Reject non-finite parameter values with current value")
+        param_name = "SIM_ACC1_RND"
+        current_value = self.get_parameter(param_name)
+        for value in (float("nan"), float("inf"), float("-inf")):
+            self.context_push()
+            self.context_collect('PARAM_ERROR')
+            self.send_set_parameter_direct(param_name, value)
+            self.assert_received_message_field_values('PARAM_ERROR', {
+                "target_system": 250,
+                "target_component": 250,
+                "param_id": param_name,
+                "param_index": -1,
+                "error": mavutil.mavlink.MAV_PARAM_ERROR_VALUE_OUT_OF_RANGE,
+            }, check_context=True, very_verbose=True)
+            reply = self.assert_receive_message(
+                'PARAM_VALUE',
+                condition="PARAM_VALUE.param_id == '%s'" % param_name,
+            )
+            self.assert_message_field_values(reply, {
+                "param_value": current_value,
+            })
+            self.context_pop()
+            self.assert_parameter_value(param_name, current_value)
+
     def Sprayer(self):
         """Test sprayer functionality."""
         rc_ch = 5
@@ -412,8 +436,7 @@ class AutoTestRover(vehicle_test_suite.TestSuite):
         self.wait_ready_to_arm()
         self.arm_vehicle()
 
-        self.set_rc(3, 2000)
-        self.set_rc(1, 1000)
+        self.set_rc_from_map({3: 2000, 1: 1000})
 
         tstart = self.get_sim_time()
         while self.get_sim_time_cached() - tstart < timeout:
@@ -423,8 +446,7 @@ class AutoTestRover(vehicle_test_suite.TestSuite):
         # centre the sticks and let the rover coast to a stop before we
         # finish.  Disarming stops the motors but not the vehicle, and
         # the next test is entitled to start from rest.
-        self.set_rc(3, 1500)
-        self.set_rc(1, 1500)
+        self.set_rc_from_map({3: 1500, 1: 1500})
         self.disarm_vehicle()
         self.wait_groundspeed(0, 0.2, minimum_duration=1)
 
@@ -834,8 +856,7 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
         self.set_rc(8, mapping[1])
         self.wait_mode('ACRO')
 
-        self.set_rc(9, 1000)
-        self.set_rc(10, 1000)
+        self.set_rc_from_map({9: 1000, 10: 1000})
         self.set_parameters({
             "RC9_OPTION": 53, # steering
             "RC10_OPTION": 54, # hold
@@ -846,8 +867,7 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
         self.wait_mode("HOLD")
 
         # reset both switches - should go back to ACRO
-        self.set_rc(9, 1000)
-        self.set_rc(10, 1000)
+        self.set_rc_from_map({9: 1000, 10: 1000})
         self.wait_mode("ACRO")
 
         self.set_rc(9, 1900)
@@ -1451,10 +1471,10 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
         self.set_parameter('FS_ACTION', 0)  # do nothing when radio fails
         self.set_rc(throttle_ch, 900)  # RC fail
         self.reboot_sitl()
-        self.wait_mode(1)
+        self.wait_mode("ACRO")
         self.progress("Make sure we stay in this mode")
         self.delay_sim_time(5, reason="mode persistence check")
-        self.wait_mode(1)
+        self.wait_mode("ACRO")
         # now change modes with a switch:
         self.set_rc(throttle_ch, 1100)
         self.delay_sim_time(3, reason="RC throttle to register")
@@ -5528,19 +5548,15 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
         self.arm_vehicle()
         self.progress("get a known heading to avoid worrying about wrap")
         # this is steering-type-two-paddles
-        self.set_rc(1, 1400)
-        self.set_rc(3, 1500)
+        self.set_rc_from_map({1: 1400, 3: 1500})
         self.wait_heading(90)
         self.progress("straighten up")
-        self.set_rc(1, 1500)
-        self.set_rc(3, 1500)
+        self.set_rc_from_map({1: 1500, 3: 1500})
         self.progress("steer one way")
-        self.set_rc(1, 1600)
-        self.set_rc(3, 1400)
+        self.set_rc_from_map({1: 1600, 3: 1400})
         self.wait_heading(120)
         self.progress("steer the other")
-        self.set_rc(1, 1400)
-        self.set_rc(3, 1600)
+        self.set_rc_from_map({1: 1400, 3: 1600})
         self.wait_heading(60)
         self.zero_throttle()
         self.disarm_vehicle()

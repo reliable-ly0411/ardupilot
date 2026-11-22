@@ -862,18 +862,20 @@ bool ModeAuto::start_command(const AP_Mission::Mission_Command& cmd)
 
     case MAV_CMD_DO_SET_ROI_LOCATION:       // 195
     case MAV_CMD_DO_SET_ROI_NONE:           // 197
+#if AP_MISSION_MAV_CMD_DO_SET_ROI_ENABLED
     case MAV_CMD_DO_SET_ROI:                // 201
+#endif  // AP_MISSION_MAV_CMD_DO_SET_ROI_ENABLED
         // point the copter and camera at a region of interest (ROI)
         // ROI_NONE can be handled by the regular ROI handler because lat, lon, alt are always zero
         do_roi(cmd);
         break;
 
-#if HAL_MOUNT_ENABLED
+#if HAL_MOUNT_ENABLED && AP_MISSION_MAV_CMD_DO_MOUNT_CONTROL_ENABLED
     case MAV_CMD_DO_MOUNT_CONTROL:          // 205
         // point the camera to a specified angle
         do_mount_control(cmd);
         break;
-#endif
+#endif  // HAL_MOUNT_ENABLED && AP_MISSION_MAV_CMD_DO_MOUNT_CONTROL_ENABLED
 
 #if AC_NAV_GUIDED
     case MAV_CMD_DO_GUIDED_LIMITS:                      // 220  accept guided mode limits
@@ -958,18 +960,18 @@ float ModeAuto::wp_bearing_deg() const
     return degrees(wp_nav->get_wp_bearing_to_destination_rad());
 }
 
-bool ModeAuto::get_wp(Location& destination) const
+bool ModeAuto::get_nav_target(NavTarget& target) const
 {
     switch (_mode) {
     case SubMode::NAV_GUIDED:
-        return copter.mode_guided.get_wp(destination);
+        return copter.mode_guided.get_nav_target(target);
     case SubMode::WP:
     case SubMode::CIRCLE_MOVE_TO_EDGE:
     case SubMode::CIRCLE:
         // the orbit and the move-to-edge leg are wp_nav legs like WP
-        return wp_nav->get_oa_wp_destination(destination);
+        return get_wpnav_target(target, true);
     case SubMode::RTL:
-        return copter.mode_rtl.get_wp(destination);
+        return copter.mode_rtl.get_nav_target(target);
     default:
         return false;
     }
@@ -1082,10 +1084,12 @@ bool ModeAuto::verify_command(const AP_Mission::Mission_Command& cmd)
     case MAV_CMD_DO_SET_HOME:
     case MAV_CMD_DO_SET_ROI_LOCATION:
     case MAV_CMD_DO_SET_ROI_NONE:
+#if AP_MISSION_MAV_CMD_DO_SET_ROI_ENABLED
     case MAV_CMD_DO_SET_ROI:
-#if HAL_MOUNT_ENABLED
+#endif  // AP_MISSION_MAV_CMD_DO_SET_ROI_ENABLED
+#if HAL_MOUNT_ENABLED && AP_MISSION_MAV_CMD_DO_MOUNT_CONTROL_ENABLED
     case MAV_CMD_DO_MOUNT_CONTROL:
-#endif
+#endif  // HAL_MOUNT_ENABLED && AP_MISSION_MAV_CMD_DO_MOUNT_CONTROL_ENABLED
 #if AC_NAV_GUIDED
     case MAV_CMD_DO_GUIDED_LIMITS:
 #endif

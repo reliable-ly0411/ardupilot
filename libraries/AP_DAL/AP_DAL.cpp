@@ -76,6 +76,7 @@ void AP_DAL::start_frame(AP_DAL::FrameType frametype)
     _RFRN.fly_forward = ahrs.get_fly_forward();
     _RFRN.takeoff_expected = ahrs.get_takeoff_expected();
     _RFRN.touchdown_expected = ahrs.get_touchdown_expected();
+    _RFRN.vehicle_landed = ahrs.get_vehicle_landed();
     _RFRN.available_memory = hal.util->available_memory();
     _RFRN.ahrs_trim = ahrs.get_trim();
 #if AP_OPTICALFLOW_ENABLED
@@ -86,7 +87,7 @@ void AP_DAL::start_frame(AP_DAL::FrameType frametype)
     WRITE_REPLAY_BLOCK_IFCHANGED(RFRN, _RFRN, old);
 
     // update body conversion
-    _rotation_vehicle_body_to_autopilot_body = ahrs.get_rotation_vehicle_body_to_autopilot_body();
+    _quat_vehicle_body_to_autopilot_body = ahrs.get_quat_vehicle_body_to_autopilot_body();
 
     _ins.start_frame();
     _baro.start_frame();

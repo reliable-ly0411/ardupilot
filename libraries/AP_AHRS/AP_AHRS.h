@@ -563,6 +563,7 @@ public:
     // trim rotation matrices:
     const Matrix3f& get_rotation_autopilot_body_to_vehicle_body(void) const { return _rotation_autopilot_body_to_vehicle_body; }
     const Matrix3f& get_rotation_vehicle_body_to_autopilot_body(void) const { return _rotation_vehicle_body_to_autopilot_body; }
+    const Quaternion& get_quat_vehicle_body_to_autopilot_body(void) const { return _quat_vehicle_body_to_autopilot_body; }
 
     // Logging functions
     void Log_Write_Home_And_Origin();
@@ -721,6 +722,17 @@ public:
         return touchdown_expected;
     }
 
+    // vehicle code sets this when it knows the vehicle has landed,
+    // even if it is still armed.  Vehicles that do not set it leave
+    // the estimators to use the armed state alone
+    void set_vehicle_landed(bool b) {
+        vehicle_landed = b;
+    }
+
+    bool get_vehicle_landed(void) const {
+        return vehicle_landed;
+    }
+
     /*
      * fly_forward is set by the vehicles to indicate the vehicle
      * should generally be moving in the direction of its heading.
@@ -877,6 +889,7 @@ private:
 
     Matrix3f _rotation_autopilot_body_to_vehicle_body;
     Matrix3f _rotation_vehicle_body_to_autopilot_body;
+    Quaternion _quat_vehicle_body_to_autopilot_body;
 
     // last time orientation was updated from AHRS_ORIENTATION:
     uint32_t last_orientation_update_ms;
@@ -895,6 +908,7 @@ private:
     uint32_t takeoff_expected_start_ms;
     bool touchdown_expected;    // true if the vehicle is in a state that touchdown might be expected.  Ground effect may be in play.
     uint32_t touchdown_expected_start_ms;
+    bool vehicle_landed;    // true if the vehicle code reports it has landed
 
     /*
      * wind estimation support
