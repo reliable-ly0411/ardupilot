@@ -2,6 +2,7 @@ name: Sync upstream
 on:
   schedule:
     - cron: "43 4 * * *"
+    - cron: "43 16 * * *"
   workflow_dispatch:
     inputs:
       action:
@@ -65,7 +66,7 @@ jobs:
         run: python3 .github/release_policy/sync_refs.py --expected-master "$EXPECTED_MASTER" --apply
       - name: Mirror one new formal source release (no firmware)
         id: release
-        if: github.event_name == 'schedule' || inputs.action == 'check-releases'
+        if: (github.event_name == 'schedule' && github.event.schedule == '43 4 * * *') || inputs.action == 'check-releases'
         env:
           GH_TOKEN: ${{ github.token }}
           RETRY_ID: ${{ inputs.retry_release_id }}

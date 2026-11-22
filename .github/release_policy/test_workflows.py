@@ -32,14 +32,20 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn("python3 .github/release_policy/source_mirror.py", text)
         self.assertNotIn("uses: ./.github/workflows/release-build.yml", text)
         self.assertIn('default: sync', text)
-        self.assertIn("github.event_name == 'schedule' || inputs.action == 'check-releases'", text)
+        self.assertIn(
+            "(github.event_name == 'schedule' && github.event.schedule == '43 4 * * *')"
+            " || inputs.action == 'check-releases'", text
+        )
         self.assertNotIn('workflow_run:', text)
         self.assertIn('cancel-in-progress: false', text)
 
     def test_full_sync_is_guarded_and_master_has_no_early_push(self):
         text = (ROOT / 'workflows/sync-upstream.yml').read_text()
         self.assertIn("github.repository == 'reliable-ly0411/ardupilot' && github.ref == 'refs/heads/master'", text)
-        self.assertIn('cron: "43 4 * * *"', text)
+        self.assertEqual(
+            re.findall(r'^\s*- cron: "([^"]+)"$', text, re.M),
+            ['43 4 * * *', '43 16 * * *']
+        )
         self.assertIn('group: release-policy-master', text)
         self.assertIn('timeout-minutes: 20', text)
         self.assertIn('id: merge', text)
