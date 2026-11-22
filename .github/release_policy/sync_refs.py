@@ -30,6 +30,19 @@ ROLLING_TAGS = frozenset({
 OID = re.compile(r'(?:[0-9a-f]{40}|[0-9a-f]{64})\Z')
 
 
+def load_legacy_mirror_omissions():
+    table = Path(__file__).with_name('legacy_mirror_omissions.txt')
+    refs = [line for line in table.read_text(encoding='utf-8').splitlines()
+            if line and not line.startswith('#')]
+    if (not refs or refs != sorted(set(refs))
+            or any(not re.fullmatch(r'refs/tags/[A-Za-z0-9_.-]+', ref) for ref in refs)):
+        raise ValueError('Invalid legacy mirror omissions manifest')
+    return frozenset(refs)
+
+
+LEGACY_MIRROR_OMISSIONS = load_legacy_mirror_omissions()
+
+
 class SyncError(RuntimeError):
     """A failed precondition or a transaction requiring operator inspection."""
 
@@ -190,6 +203,9 @@ class SyncRefs:
             if ref == MASTER:
                 continue
             old = fork.get(ref, '')
+            if not old and ref in LEGACY_MIRROR_OMISSIONS:
+                plan.counts['omitted legacy tags'] += 1
+                continue
             if ref.startswith('refs/heads/'):
                 if not old:
                     plan.add(ref, '', new, 'new branches')

@@ -87,6 +87,36 @@ class RefSyncTests(unittest.TestCase):
         self.assertEqual(self.snapshot()['refs/heads/existing'], tip)
         self.assertEqual(self.snapshot()['refs/heads/new'], tip)
 
+    def test_curated_legacy_omissions_only_skip_missing_exact_tags(self):
+        omitted = ('refs/tags/Copter-3.6.0', 'refs/tags/Copter-3.5.2-rc1',
+                   'refs/tags/ArduPlane-2.40-beta', 'refs/tags/-3.8.2',
+                   'refs/tags/Copter-4.3.0')
+        existing = 'refs/tags/Copter-3.6.1'
+        retained = ('refs/tags/Copter-4.4.0', 'refs/tags/ArduCopter-beta',
+                    'refs/tags/AP_Periph-1.7.0', 'refs/tags/Copter-3.6.0-rc1',
+                    'refs/heads/Copter-3.6')
+        fork_only = 'refs/tags/ArduPlane-3.9.8'
+        for ref in (*omitted, existing, *retained):
+            self.publish(self.upstream, ref, self.base)
+        for ref in (existing, fork_only):
+            self.publish(self.fork, ref, self.base)
+        self.assertTrue(set((*omitted, existing, fork_only)) <= m.LEGACY_MIRROR_OMISSIONS)
+        self.assertFalse(set(retained) & m.LEGACY_MIRROR_OMISSIONS)
+        plan = self.apply()
+        self.assertEqual(plan.counts['omitted legacy tags'], len(omitted))
+        for ref in omitted:
+            self.assertNotIn(ref, self.snapshot())
+        for ref in (*retained, existing, fork_only):
+            self.assertEqual(self.snapshot()[ref], self.base)
+        changed = self.commit('different fixed legacy object', self.base)
+        self.publish(self.upstream, existing, changed)
+        before = self.snapshot()
+        plan = self.plan()
+        self.assertIn('Fixed tag direct-object conflict: ' + existing, plan.conflicts)
+        with self.assertRaisesRegex(m.SyncError, 'conflicts'):
+            self.sync.apply(plan)
+        self.assertEqual(self.snapshot(), before)
+
     def test_fork_ahead_and_fork_only_preserved_without_deletions(self):
         ahead = self.commit('downstream', self.base)
         self.publish(self.upstream, 'refs/heads/shared', self.base)
