@@ -1,160 +1,25 @@
 name: colcon build/test
 
-on:
-  push:
-    branches: ['**']  # excludes tag pushes
-    paths-ignore:
-      - 'Tools/renode/**'
-      # remove not tests vehicles
-      - 'AntennaTracker/**'
-      - 'ArduSub/**'
-      - 'Blimp/**'
-      - 'Rover/**'
-      # remove esp32 HAL
-      - 'libraries/AP_HAL_ESP32/**'
-      # remove non SITL directories
-      - 'Tools/AP_Bootloader/**'
-      - 'Tools/bootloaders/**'
-      - 'Tools/cameras_gimbals/**'
-      - 'Tools/CHDK-Scripts/**'
-      - 'Tools/CodeStyle/**'
-      - 'Tools/completion/**'
-      - 'Tools/CPUInfo/**'
-      - 'Tools/debug/**'
-      - 'Tools/environment_install/**'
-      - 'Tools/FilterTestTool/**'
-      - 'Tools/Frame_params/**'
-      - 'Tools/geotag/**'
-      - 'Tools/GIT_Test/**'
-      - 'Tools/gittools/**'
-      - 'Tools/Hello/**'
-      - 'Tools/IO_Firmware/**'
-      - 'Tools/Linux_HAL_Essentials/**'
-      - 'Tools/mavproxy_modules/**'
-      - 'Tools/Pozyx/**'
-      - 'Tools/PrintVersion.py'
-      - 'Tools/Replay/**'
-      - 'Tools/simulink/**'
-      - 'Tools/terrain-tools/**'
-      - 'Tools/UDP_Proxy/**'
-      - 'Tools/vagrant/**'
-      - 'Tools/Vicon/**'
-      # Discard python file from Tools/scripts as not used
-      - 'Tools/scripts/**.py'
-      - 'Tools/scripts/build_sizes/**'
-      - 'Tools/scripts/build_tests/**'
-      - 'Tools/scripts/CAN/**'
-      - 'Tools/scripts/signing/**'
-      # Remove autotests stuff
-      - 'Tools/autotest/**'
-      # Remove markdown files as irrelevant
-      - '**.md'
-      # Remove dotfile at root directory
-      - '.dir-locals.el'
-      - '.dockerignore'
-      - '.editorconfig'
-      - '.flake8'
-      - '.gitattributes'
-      - '.gitignore'
-      - '.pre-commit-config.yaml'
-      - '.valgrind-suppressions'
-      - '.valgrindrc'
-      - 'Dockerfile'
-      - 'Vagrantfile'
-      # Remove some directories check
-      - '.vscode/**'
-      # Remove change on other workflows
-      - '.github/**'
-      - '!.github/actions/**'  # except actions
-      - '!.github/workflows/colcon.yml'  # except this one
-
-  pull_request:
-    paths-ignore:
-      - 'Tools/renode/**'
-      # remove not tests vehicles
-      - 'AntennaTracker/**'
-      - 'ArduSub/**'
-      - 'Rover/**'
-      - 'Blimp/**'
-      # remove esp32 HAL
-      - 'libraries/AP_HAL_ESP32/**'
-      # remove non SITL directories
-      - 'Tools/AP_Bootloader/**'
-      - 'Tools/bootloaders/**'
-      - 'Tools/cameras_gimbals/**'
-      - 'Tools/CHDK-Scripts/**'
-      - 'Tools/CodeStyle/**'
-      - 'Tools/completion/**'
-      - 'Tools/CPUInfo/**'
-      - 'Tools/debug/**'
-      - 'Tools/environment_install/**'
-      - 'Tools/FilterTestTool/**'
-      - 'Tools/Frame_params/**'
-      - 'Tools/geotag/**'
-      - 'Tools/GIT_Test/**'
-      - 'Tools/gittools/**'
-      - 'Tools/Hello/**'
-      - 'Tools/IO_Firmware/**'
-      - 'Tools/Linux_HAL_Essentials/**'
-      - 'Tools/mavproxy_modules/**'
-      - 'Tools/Pozyx/**'
-      - 'Tools/PrintVersion.py'
-      - 'Tools/Replay/**'
-      - 'Tools/simulink/**'
-      - 'Tools/terrain-tools/**'
-      - 'Tools/UDP_Proxy/**'
-      - 'Tools/vagrant/**'
-      - 'Tools/Vicon/**'
-      # Discard python file from Tools/scripts as not used
-      - 'Tools/scripts/**.py'
-      - 'Tools/scripts/build_sizes/**'
-      - 'Tools/scripts/build_tests/**'
-      - 'Tools/scripts/CAN/**'
-      - 'Tools/scripts/signing/**'
-      # Remove autotests stuff
-      - 'Tools/autotest/**'
-      # Remove markdown files as irrelevant
-      - '**.md'
-      # Remove dotfile at root directory
-      - '.dir-locals.el'
-      - '.dockerignore'
-      - '.editorconfig'
-      - '.flake8'
-      - '.gitattributes'
-      - '.gitignore'
-      - '.pre-commit-config.yaml'
-      - '.valgrind-suppressions'
-      - '.valgrindrc'
-      - 'Dockerfile'
-      - 'Vagrantfile'
-      # Remove some directories check
-      - '.vscode/**'
-      # Remove change on other workflows
-      - '.github/**'
-      - '!.github/actions/**'  # except actions
-      - '!.github/workflows/colcon.yml'  # except this one
-
-  workflow_dispatch:
+'on':
+  workflow_dispatch: null
 
 concurrency:
-  group: ci-${{github.workflow}}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-colcon-${{github.workflow}}-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read  # checkout; build-test adds actions:write per-job
 
 jobs:
   build-test:
+    if: github.repository == 'ArduPilot/ardupilot' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       actions: write  # save/prune ccache on master
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     container:
-      # deliberately floating: this is the continuous-testing job for the
-      # ardupilot-dev-ros image itself, so it must track whatever "latest"
-      # points at, not a pinned snapshot of it
-      image: ardupilot/ardupilot-dev-ros:latest  # zizmor: ignore[unpinned-images]
+      image: ardupilot/ardupilot-dev-ros:latest
     steps:
       # Sparse checkout to make .github/actions/* available without polluting the colcon workspace
       - uses: actions/checkout@v7
@@ -175,14 +40,15 @@ jobs:
       - name: Pull in repos with vcs
         run: |
           cd src
-          vcs import --recursive --debug --shallow --skip-existing < ./ardupilot/Tools/ros2/ros2.repos
+          wget --progress=dot:giga https://raw.githubusercontent.com/ArduPilot/ardupilot/master/Tools/ros2/ros2.repos
+          vcs import --recursive --debug --shallow --skip-existing < ros2.repos
       - name: Install rosdep dependencies
         shell: 'bash'
         run: |
           apt update
           rosdep update
           source /opt/ros/humble/setup.bash
-          rosdep install --from-paths src --ignore-src --default-yes --skip-keys microxrcedds_agent
+          rosdep install --from-paths src --ignore-src --default-yes
       - name: Install MAVProxy
         run: |
           # Install this specific version just to prevent rolling updates.

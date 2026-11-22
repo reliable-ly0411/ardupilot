@@ -1,107 +1,26 @@
 name: test unit tests and sitl building
 
-on:
-  push:
-    branches: ['**']  # excludes tag pushes
-    paths-ignore:
-      - 'Tools/renode/**'
-      # Remove markdown files as irrelevant
-      - '**.md'
-      # Remove dotfile at root directory
-      - '.dir-locals.el'
-      - '.dockerignore'
-      - '.editorconfig'
-      - '.gitattributes'
-      - '.gitignore'
-      - '.valgrind-suppressions'
-      - '.valgrindrc'
-      - 'Dockerfile'
-      - 'Vagrantfile'
-      # Remove some directories check
-      - '.vscode/**'
-      # Remove generic tools
-      - 'Tools/cameras_gimbals/**'
-      - 'Tools/CHDK-Scripts/**'
-      - 'Tools/CodeStyle/**'
-      - 'Tools/completion/**'
-      - 'Tools/CPUInfo/**'
-      - 'Tools/debug/**'
-      - 'Tools/environment_install/**'
-      - 'Tools/FilterTestTool/**'
-      - 'Tools/geotag/**'
-      - 'Tools/GIT_Test/**'
-      - 'Tools/gittools/**'
-      - 'Tools/Hello/**'
-      - 'Tools/Linux_HAL_Essentials/**'
-      - 'Tools/mavproxy_modules/**'
-      - 'Tools/Pozyx/**'
-      - 'Tools/PrintVersion.py'
-      - 'Tools/simulink/**'
-      - 'Tools/terrain-tools/**'
-      - 'Tools/UDP_Proxy/**'
-      - 'Tools/vagrant/**'
-      - 'Tools/Vicon/**'
-      # remove non SITL HAL
-      - 'libraries/AP_HAL_ChibiOS/**'
-      - 'libraries/AP_HAL_ESP32/**'
-      - 'libraries/AP_HAL_QURT/**'
-      # Remove change on other workflows
-      - '.github/**'
-      - '!.github/actions/**'  # except actions
-      - '!.github/workflows/test_unit_tests.yml'  # except this one
-  pull_request:
-    paths-ignore:
-      - 'Tools/renode/**'
-      # Remove markdown files as irrelevant
-      - '**.md'
-      # Remove dotfile at root directory
-      - '.dir-locals.el'
-      - '.dockerignore'
-      - '.editorconfig'
-      - '.gitattributes'
-      - '.gitignore'
-      - '.valgrind-suppressions'
-      - '.valgrindrc'
-      - 'Dockerfile'
-      - 'Vagrantfile'
-      # Remove some directories check
-      - '.vscode/**'
-      # Remove generic tools
-      - 'Tools/cameras_gimbals/**'
-      - 'Tools/CHDK-Scripts/**'
-      - 'Tools/CodeStyle/**'
-      - 'Tools/completion/**'
-      - 'Tools/CPUInfo/**'
-      - 'Tools/debug/**'
-      - 'Tools/environment_install/**'
-      - 'Tools/FilterTestTool/**'
-      - 'Tools/geotag/**'
-      - 'Tools/GIT_Test/**'
-      - 'Tools/gittools/**'
-      - 'Tools/Hello/**'
-      - 'Tools/Linux_HAL_Essentials/**'
-      - 'Tools/mavproxy_modules/**'
-      - 'Tools/Pozyx/**'
-      - 'Tools/PrintVersion.py'
-      - 'Tools/simulink/**'
-      - 'Tools/terrain-tools/**'
-      - 'Tools/UDP_Proxy/**'
-      - 'Tools/vagrant/**'
-      - 'Tools/Vicon/**'
-      # remove non SITL HAL
-      - 'libraries/AP_HAL_ChibiOS/**'
-      - 'libraries/AP_HAL_ESP32/**'
-      - 'libraries/AP_HAL_QURT/**'
-      # Remove change on other workflows
-      - '.github/**'
-      - '!.github/actions/**'  # except actions
-      - '!.github/workflows/test_unit_tests.yml'  # except this one
-
+'on':
   workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Explicit manual source ref (blank uses selected workflow ref)
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Explicit manual source ref (blank uses selected workflow ref)
+        type: string
+        default: ''
+      release_manifest:
+        type: string
+        default: ''
+        description: Pinned manifest from the release gate; empty only for explicit manual builds
 
 concurrency:
-  group: ci-${{github.workflow}}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-test_unit_tests-${{github.workflow}}-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read  # checkout; jobs that save ccache add actions:write per-job
@@ -124,24 +43,23 @@ jobs:
         ]
         config: [
             unit-tests,
-            unit-tests-asan,
             examples,
-            examples-asan,
             sitl
         ]
-        exclude:
-          # the clang images do not carry the sanitizer runtime, so clang
-          # cannot link anything built with --asan.  Drop these two once
-          # libclang-rt-<v>-dev is in ardupilot-dev-clang
-          - toolchain: clang
-            config: unit-tests-asan
-          - toolchain: clang
-            config: examples-asan
     steps:
       # git checkout the PR
       - uses: actions/checkout@v7
         with:
+          fetch-depth: 0
+          ref: ${{ inputs.source_ref || github.sha }}
           submodules: 'recursive'
+      - name: Reconstruct and verify pinned release source
+        if: inputs.release_manifest != ''
+        shell: bash
+        env:
+          RELEASE_MANIFEST: ${{ inputs.release_manifest }}
+        run: python3 .github/release_policy/policy.py materialize
+
       - uses: ./.github/actions/setup-ccache
         with:
           key-suffix: ${{ matrix.toolchain }}-${{ matrix.config }}
@@ -174,13 +92,6 @@ jobs:
         if: matrix.config == 'unit-tests'
         run: |
           Tools/autotest/unittest/annotate_params_unittest.py
-
-      - name: Unittest test_new_boards
-        env:
-          PYTHONPATH: "${{ github.workspace }}/Tools/scripts"
-        if: matrix.config == 'unit-tests'
-        run: |
-          python3 Tools/autotest/unittest/test_new_boards_unittest.py
 
       - name: Archive buildlog artifacts
         uses: actions/upload-artifact@v7

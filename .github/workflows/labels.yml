@@ -18,7 +18,7 @@ jobs:
   labels-by-language:
     name: labels-by-language
     runs-on: ubuntu-slim
-    if: github.event.workflow_run.conclusion == 'success'
+    if: github.repository == 'ArduPilot/ardupilot' && github.event.workflow_run.conclusion == 'success'
     permissions:
       pull-requests: write  # So we can add labels to the pull request
     steps:
