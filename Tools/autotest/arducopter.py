@@ -2795,6 +2795,292 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
         self.zero_throttle()
 
+    def assert_fence_breach_reported(self, fence_name, parameter, outside, inside, timeout=20):
+        """move one fence limit past the hovering vehicle and assert that the
+        breach is reported by name.  A breach is reported only by a fence the
+        vehicle is actually enforcing, so this distinguishes the types which
+        the aggregate SYS_STATUS geofence bit cannot: that bit is still set
+        when one of several types has been lost.  The limit is restored
+        before returning."""
+        self.context_collect('STATUSTEXT')
+        try:
+            self.set_parameter(parameter, outside)
+            self.wait_statustext("%s fence breached" % fence_name,
+                                 check_context=True,
+                                 timeout=timeout)
+            # the breach has to be cleared before the next case, and the
+            # vehicle says so as soon as the limit is restored - which is
+            # inside the set_parameter below, so this has to be looking at a
+            # collection which was already running rather than start waiting
+            # afterwards
+            self.set_parameter(parameter, inside)
+            self.wait_statustext("Fence breach cleared",
+                                 check_context=True,
+                                 timeout=timeout)
+        finally:
+            self.set_parameter(parameter, inside)
+            self.context_stop_collecting('STATUSTEXT')
+
+    def assert_no_fence_breach_reported(self, parameter, outside, inside):
+        """the mirror of assert_fence_breach_reported: move a limit past the
+        hovering vehicle and assert that no fence reports a breach"""
+        self.context_collect('STATUSTEXT')
+        self.set_parameter(parameter, outside)
+        self.delay_sim_time(5, reason="see whether any fence is enforced")
+        breach = self.statustext_in_collections("fence breached")
+        self.context_stop_collecting('STATUSTEXT')
+        self.set_parameter(parameter, inside)
+        if breach is not None:
+            raise NotAchievedException("Fence enforced when it should not be (%s)" %
+                                       breach.text)
+
+    def FenceTypeChangeTakesEffect(self):
+        """FENCE_TYPE changes take effect without re-enabling the fence"""
+        self.start_subtest("a type added to an enabled fence is enforced")
+        # a fence which is enabled with no types selected enforces nothing
+        self.set_parameters({
+            "FENCE_AUTOENABLE": 0,
+            "FENCE_ENABLE": 1,
+            "FENCE_TYPE": 0,
+        })
+        self.assert_sensor_state(
+            mavutil.mavlink.MAV_SYS_STATUS_GEOFENCE,
+            present=False,
+            enabled=False,
+        )
+
+        # select the max-altitude fence, leaving FENCE_ENABLE alone.  The
+        # fence the vehicle enforces is a runtime set which AC_Fence::update()
+        # derives from FENCE_TYPE at 10Hz, so give it time to notice; the
+        # parameter on its own is not what is enforced.
+        self.set_parameter("FENCE_TYPE", 1)  # ALT_MAX
+        self.delay_sim_time(1, reason="let AC_Fence::update() pick up FENCE_TYPE")
+        self.assert_sensor_state(
+            mavutil.mavlink.MAV_SYS_STATUS_GEOFENCE,
+            present=True,
+            enabled=True,
+        )
+
+        self.start_subtest("a type change leaves a commanded fence enabled")
+        # the runtime set also carries MAV_CMD_DO_FENCE_ENABLE, the RC switch
+        # and the auto-enabled floor, none of which a FENCE_TYPE write asks us
+        # to revisit.  Discarding them would take the fence off a flying
+        # vehicle, so a type change may only add and remove types.
+        self.set_parameters({
+            "FENCE_ENABLE": 0,
+            "FENCE_TYPE": 1,  # ALT_MAX
+        })
+        self.delay_sim_time(1, reason="let AC_Fence::update() settle")
+        self.do_fence_enable()
+        self.assert_sensor_state(
+            mavutil.mavlink.MAV_SYS_STATUS_GEOFENCE,
+            present=True,
+            enabled=True,
+        )
+        self.set_parameter("FENCE_TYPE", 3)  # add the circle fence
+        self.delay_sim_time(1, reason="let AC_Fence::update() pick up FENCE_TYPE")
+        self.assert_sensor_state(
+            mavutil.mavlink.MAV_SYS_STATUS_GEOFENCE,
+            present=True,
+            enabled=True,
+        )
+
+        # the remaining cases turn on which types are enforced rather than
+        # whether any are, so they fly: a breach names the fence which
+        # reported it.  FENCE_ACTION is report-only and avoidance is off, so
+        # the vehicle holds its hover and one flight covers every case.
+        self.set_parameters({
+            "AVOID_ENABLE": 0,
+            "FENCE_ACTION": 0,  # report only
+            "FENCE_ALT_MAX": 50,
+            "FENCE_ALT_MIN": 5,
+            "FENCE_RADIUS": 300,
+            "FENCE_ENABLE": 0,
+            "FENCE_TYPE": 1,  # ALT_MAX
+        })
+        self.takeoff(20, mode='LOITER')
+        self.do_fence_enable()
+        self.assert_fence_breach_reported("Max Alt", "FENCE_ALT_MAX", 10, 50)
+
+        self.start_subtest("a type removed from an enabled fence is not enforced")
+        self.set_parameter("FENCE_TYPE", 0)
+        self.delay_sim_time(1, reason="let AC_Fence::update() pick up FENCE_TYPE")
+        self.assert_sensor_state(
+            mavutil.mavlink.MAV_SYS_STATUS_GEOFENCE,
+            present=False,
+            enabled=False,
+        )
+        self.assert_no_fence_breach_reported("FENCE_ALT_MAX", 10, 50)
+
+        self.start_subtest("a type re-added to an enabled fence is enforced")
+        # emptying FENCE_TYPE is not a disable: the pilot never turned the
+        # fence off, so a type configured afterwards is enforced again
+        self.set_parameter("FENCE_TYPE", 1)  # ALT_MAX
+        self.delay_sim_time(1, reason="let AC_Fence::update() pick up FENCE_TYPE")
+        self.assert_fence_breach_reported("Max Alt", "FENCE_ALT_MAX", 10, 50)
+
+        self.start_subtest("a one-write type swap is enforced")
+        # a single write which both adds and removes a type must leave the
+        # fence enforcing the type which arrived, not nothing at all
+        self.do_fence_disable()
+        self.set_parameter("FENCE_TYPE", 2)  # CIRCLE only
+        self.delay_sim_time(1, reason="let AC_Fence::update() settle")
+        self.do_fence_enable()
+        self.set_parameter("FENCE_TYPE", 1)  # swap the circle for the ceiling
+        self.delay_sim_time(1, reason="let AC_Fence::update() pick up FENCE_TYPE")
+        self.assert_fence_breach_reported("Max Alt", "FENCE_ALT_MAX", 10, 50)
+
+        self.start_subtest("a type change leaves the min-alt floor enforced")
+        # the floor is never enabled by being configured - it is enabled on
+        # reaching its altitude - but a type change must not drop the floor
+        # the pilot has enabled either
+        self.do_fence_disable()
+        self.set_parameter("FENCE_TYPE", 8)  # ALT_MIN only
+        self.delay_sim_time(1, reason="let AC_Fence::update() settle")
+        self.do_fence_enable()
+        self.set_parameter("FENCE_TYPE", 9)  # add the ceiling in one write
+        self.delay_sim_time(1, reason="let AC_Fence::update() pick up FENCE_TYPE")
+        self.assert_fence_breach_reported("Min Alt", "FENCE_ALT_MIN", 30, 5)
+        self.assert_fence_breach_reported("Max Alt", "FENCE_ALT_MAX", 10, 50)
+
+        self.start_subtest("a floor removed from FENCE_TYPE and re-added is enforced")
+        # the floor is excepted from being enabled by configuration, because
+        # it comes on when its altitude is reached.  That exception must not
+        # swallow a floor which was already being enforced when FENCE_TYPE
+        # lost it: nothing asked for it to stop, and with FENCE_ENABLE clear
+        # auto_enable_fence_floor() will not bring it back either.
+        self.do_fence_disable()
+        self.set_parameter("FENCE_TYPE", 9)  # ALT_MAX|ALT_MIN
+        self.delay_sim_time(1, reason="let AC_Fence::update() settle")
+        self.do_fence_enable()  # the floor comes on with the rest
+        self.set_parameter("FENCE_TYPE", 1)  # drop the floor
+        self.delay_sim_time(1, reason="let AC_Fence::update() pick up FENCE_TYPE")
+        self.set_parameter("FENCE_TYPE", 9)  # and configure it again
+        self.delay_sim_time(1, reason="let AC_Fence::update() pick up FENCE_TYPE")
+        self.assert_fence_breach_reported("Min Alt", "FENCE_ALT_MIN", 30, 5)
+
+        self.start_subtest("the same with FENCE_ENABLE set")
+        # the vehicle has to hover *inside* the floor's margin, or
+        # auto_enable_fence_floor() turns the floor back on by itself and the
+        # subtest passes whatever the type change did.  A 16m floor with 10m of
+        # margin auto-enables at 26m, so a hover at 20m is six metres clear of
+        # it rather than one; assert that rather than trust it, because a
+        # subtest which has drifted out of the band proves nothing.
+        self.set_parameters({
+            "FENCE_ALT_MIN": 16,
+            "FENCE_MARGIN": 10,
+            "FENCE_ENABLE": 1,
+            "FENCE_TYPE": 9,
+        })
+        self.assert_altitude(21, accuracy=4, relative=True)
+        self.delay_sim_time(1, reason="let AC_Fence::update() settle")
+        self.do_fence_enable()  # FENCE_ENABLE does not turn the floor on
+        self.set_parameter("FENCE_TYPE", 1)
+        self.delay_sim_time(1, reason="let AC_Fence::update() pick up FENCE_TYPE")
+        self.set_parameter("FENCE_TYPE", 9)
+        self.delay_sim_time(1, reason="let AC_Fence::update() pick up FENCE_TYPE")
+        self.assert_fence_breach_reported("Min Alt", "FENCE_ALT_MIN", 30, 16)
+        self.set_parameters({
+            "FENCE_ENABLE": 0,
+            "FENCE_ALT_MIN": 5,
+            "FENCE_MARGIN": 2,
+        })
+        self.delay_sim_time(1, reason="let AC_Fence::update() settle")
+
+        self.start_subtest("an enable between losing and regaining the floor keeps it")
+        # a floor which was being enforced when FENCE_TYPE stopped carrying it
+        # is still wanted, and an enable arriving in between - here one which
+        # does not even name the floor - must not forget that.  Inside the
+        # margin again, so the auto-enable cannot restore it for us.
+        self.do_fence_disable()
+        self.set_parameters({
+            "FENCE_ALT_MIN": 16,
+            "FENCE_MARGIN": 10,
+            "FENCE_TYPE": 9,  # ALT_MAX|ALT_MIN
+        })
+        self.assert_altitude(21, accuracy=4, relative=True)
+        self.delay_sim_time(1, reason="let AC_Fence::update() settle")
+        self.do_fence_enable()  # the floor is enforced
+        self.set_parameter("FENCE_TYPE", 1)  # the floor leaves FENCE_TYPE
+        self.delay_sim_time(1, reason="let AC_Fence::update() pick up FENCE_TYPE")
+        self.do_fence_enable_except_floor()
+        self.set_parameter("FENCE_TYPE", 9)  # and comes back
+        self.delay_sim_time(1, reason="let AC_Fence::update() pick up FENCE_TYPE")
+        self.assert_fence_breach_reported("Min Alt", "FENCE_ALT_MIN", 30, 16)
+        self.set_parameters({
+            "FENCE_ALT_MIN": 5,
+            "FENCE_MARGIN": 2,
+        })
+
+        self.start_subtest("a floor configured for the first time is not enforced")
+        # a blanket enable names every fence type, including a floor which is
+        # not configured.  That must not become a floor enforced the moment one
+        # is configured: the floor comes on when its altitude is reached.  The
+        # hover is inside the margin again, so nothing else can enable it.
+        self.do_fence_disable()
+        self.set_parameters({
+            "FENCE_ALT_MIN": 16,
+            "FENCE_MARGIN": 10,
+            "FENCE_TYPE": 1,  # ALT_MAX only: the floor has never been configured
+        })
+        self.assert_altitude(21, accuracy=4, relative=True)
+        self.delay_sim_time(1, reason="let AC_Fence::update() settle")
+        self.do_fence_enable()  # a blanket enable, which names the floor too
+        self.set_parameter("FENCE_TYPE", 9)  # configure the floor
+        self.delay_sim_time(1, reason="let AC_Fence::update() pick up FENCE_TYPE")
+        self.assert_no_fence_breach_reported("FENCE_ALT_MIN", 30, 16)
+        self.set_parameters({
+            "FENCE_ALT_MIN": 5,
+            "FENCE_MARGIN": 2,
+        })
+
+        self.start_subtest("a floor-only disable leaves the other types enforced")
+        # disabling the floor - which a landing does, and a GCS can ask for -
+        # is a request about one type, not the pilot taking the fence off, so
+        # a type configured afterwards is still enforced.  The floor may be
+        # the only type enabled when it happens, so what is enforced cannot be
+        # used to tell the two apart.
+        self.do_fence_disable()
+        self.set_parameter("FENCE_TYPE", 9)  # ALT_MAX|ALT_MIN
+        self.delay_sim_time(1, reason="let AC_Fence::update() settle")
+        self.do_fence_enable()
+        self.set_parameter("FENCE_TYPE", 8)  # drop the ceiling
+        self.delay_sim_time(1, reason="let AC_Fence::update() pick up FENCE_TYPE")
+        self.do_fence_disable_floor()
+        self.set_parameter("FENCE_TYPE", 9)  # and configure the ceiling again
+        self.delay_sim_time(1, reason="let AC_Fence::update() pick up FENCE_TYPE")
+        self.assert_fence_breach_reported("Max Alt", "FENCE_ALT_MAX", 10, 50)
+
+        self.start_subtest("a type added after a disable at FENCE_TYPE 0 is not enforced")
+        # a disable which arrives while nothing is configured changes no bit,
+        # and must still take the fence off: a type configured afterwards is
+        # not enforced.  Master goes on enforcing the type it had.
+        self.do_fence_enable()
+        self.set_parameter("FENCE_TYPE", 0)
+        self.delay_sim_time(1, reason="let AC_Fence::update() pick up FENCE_TYPE")
+        self.do_fence_disable()  # accepted, and changes no enforced type
+        self.set_parameter("FENCE_TYPE", 1)  # ALT_MAX configured again
+        self.delay_sim_time(1, reason="let AC_Fence::update() pick up FENCE_TYPE")
+        self.assert_no_fence_breach_reported("FENCE_ALT_MAX", 10, 50)
+
+        self.start_subtest("a circle fence added by a type change is enforced")
+        # the circle is centred on home and FENCE_RADIUS may not go below 30m,
+        # so the vehicle is flown out rather than the limit brought in
+        self.reach_distance_manual(60)
+        self.do_fence_disable()
+        self.set_parameter("FENCE_TYPE", 8)  # ALT_MIN only
+        self.delay_sim_time(1, reason="let AC_Fence::update() settle")
+        self.do_fence_enable()
+        self.set_parameter("FENCE_TYPE", 10)  # add the circle in one write
+        self.delay_sim_time(1, reason="let AC_Fence::update() pick up FENCE_TYPE")
+        self.assert_fence_breach_reported("Circle", "FENCE_RADIUS", 30, 300)
+
+        self.do_fence_disable()
+        self.set_parameter("FENCE_TYPE", 0)
+        # the circle subtest left the vehicle 60m out, and a test has to end
+        # where it started, so come home rather than landing where we are
+        self.do_RTL()
+
     # MaxAltFence - fly up until you hit the fence ceiling
     def MaxAltFence(self):
         '''Test Max Alt Fences'''
@@ -4921,6 +5207,73 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         # just reboot.
         self.reboot_sitl()
 
+    def OpticalFlowFocusAlt(self):
+        '''Below FLOW_ALT_MIN the EKF does not fuse optical flow so bad flow cannot drive a phantom velocity'''
+        # The check is driven by the altitude above terrain (HAGL) the EKF uses for flow fusion.  FLOW_ALT_MIN
+        # is set far above any real sensor so the vehicle can hover below it long enough to measure.
+        self.set_parameters({
+            "SIM_FLOW_ENABLE": 1,
+            "FLOW_TYPE": 10,
+            "SIM_GPS1_ENABLE": 0,
+        })
+        self.configure_EKFs_to_use_optical_flow_instead_of_GPS()
+        self.set_analog_rangefinder_parameters()
+
+        hover_alt_m = 2.0
+
+        def fly_with_bad_flow(flow_alt_min):
+            self.set_parameters({"FLOW_ALT_MIN": flow_alt_min, "SIM_FLOW_OFS_X": 0})
+            self.reboot_sitl()
+            self.wait_ready_to_arm(require_absolute=False, timeout=120)
+            # flow is not healthy while stationary on the ground, so climb in ALT_HOLD
+            # before entering a mode that needs a position estimate
+            self.takeoff(
+                altitude_min=5,
+                mode='ALT_HOLD',
+                require_absolute=False,
+                takeoff_throttle=1700,
+            )
+            self.change_mode('GUIDED')
+            self.send_position_target_local_ned(0, 0, hover_alt_m)
+            self.wait_altitude(
+                hover_alt_m - 0.3,
+                hover_alt_m + 0.3,
+                relative=True,
+                minimum_duration=3,
+                timeout=90,
+            )
+            # measure in ALT_HOLD, which leaves a phantom velocity in the estimate.  A
+            # position-controlled mode flies it away instead, hiding the effect.
+            self.hover()
+            self.change_mode('ALT_HOLD')
+            # only messages from the hover below FLOW_ALT_MIN are of interest
+            self.context_collect('STATUSTEXT')
+            self.context_clear_collection('STATUSTEXT')
+            # a flow rate offset reads as motion that is not happening, as an unfocused
+            # sensor does near the ground
+            self.set_parameter("SIM_FLOW_OFS_X", 1.0)
+
+        self.start_subtest("Below FLOW_ALT_MIN the flow is not fused")
+        fly_with_bad_flow(3.0)
+        self.wait_groundspeed(0, 0.5, minimum_duration=15, timeout=25)
+        # the EKF loses flow aiding after 5s without flow to fuse but must not start it again
+        if self.statustext_in_collections("started relative aiding"):
+            raise NotAchievedException("Relative aiding restarted below FLOW_ALT_MIN")
+        self.set_parameter("SIM_FLOW_OFS_X", 0)
+        self.disarm_vehicle(force=True)
+
+        self.start_subtest("FLOW_ALT_MIN disabled: bad flow drives a phantom velocity")
+        fly_with_bad_flow(0)
+        self.wait_groundspeed(0.8, 1000, timeout=30)
+        self.set_parameter("SIM_FLOW_OFS_X", 0)
+        self.disarm_vehicle(force=True)
+
+        self.start_subtest("Above FLOW_ALT_MIN the flow is still fused")
+        fly_with_bad_flow(1.0)
+        self.wait_groundspeed(0.8, 1000, timeout=30)
+        self.set_parameter("SIM_FLOW_OFS_X", 0)
+        self.disarm_vehicle(force=True)
+
     def OpticalFlowCalibration(self):
         '''test optical flow calibration'''
         ex = None
@@ -6298,6 +6651,43 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         if not self.current_onboard_log_contains_message("XKFD"):
             raise NotAchievedException("Did not find expected XKFD message")
 
+    def BodyFrameOdomDelay(self):
+        """EKF3 relative aiding from VISION_POSITION_DELTA must not depend on VISO_DELAY_MS."""
+
+        if self.get_parameter("AHRS_EKF_TYPE") != 3:
+            # only tested on this EKF
+            return
+
+        self.customise_SITL_commandline(["--serial5=sim:vicon:"])
+
+        # configure EKF to use external nav instead of GPS
+        self.set_parameters({
+            "EK3_SRC1_POSXY": 6,
+            "EK3_SRC1_VELXY": 6,
+            "EK3_SRC1_POSZ": 6,
+            "EK3_SRC1_VELZ": 6,
+            "GPS1_TYPE": 0,
+            "VISO_TYPE": 1,
+            "SERIAL5_PROTOCOL": 1,
+            "SIM_VICON_TMASK": 8,  # send VISION_POSITION_DELTA
+        })
+
+        required_flags = (mavutil.mavlink.ESTIMATOR_VELOCITY_HORIZ |
+                          mavutil.mavlink.ESTIMATOR_POS_HORIZ_REL |
+                          mavutil.mavlink.ESTIMATOR_PRED_POS_HORIZ_REL)
+        error_bits = mavutil.mavlink.ESTIMATOR_CONST_POS_MODE
+
+        for delay_ms in 0, 40, 200, 250:
+            self.start_subtest(f"VISO_DELAY_MS={delay_ms}")
+            # the delay sizes the EKF buffers at startup, so reboot after changing it
+            self.set_parameter("VISO_DELAY_MS", delay_ms)
+            self.reboot_sitl()
+            # the EKF must start relative aiding from the body-frame odometry
+            # and leave constant-position mode, whatever the configured delay
+            self.wait_ekf_flags(required_flags, error_bits, timeout=60, minimum_duration=5)
+            if not self.current_onboard_log_contains_message("XKFD"):
+                raise NotAchievedException(f"Did not find expected XKFD message at VISO_DELAY_MS={delay_ms}")
+
     def FlyMissionTwice(self):
         '''fly a mission twice in a row without changing modes in between.
         Seeks to show bugs in mission state machine'''
@@ -6379,6 +6769,74 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                      timeout=1,
                      want_result=mavutil.mavlink.MAV_RESULT_DENIED)
 
+    def MAV_CMD_DO_SET_MISSION_CURRENT_no_nav_command(self):
+        '''Test setting the current command in a mission whose loop holds no nav command'''
+
+        # setting the current command searches forward for a nav command to
+        # load, following jumps as it goes.  A forever jump over nothing but
+        # do commands never runs out of repeats and never reaches a nav
+        # command, so the search has nothing to terminate on and locks up the
+        # main loop, taking the vehicle with it.
+        # The mission is meant to fly back and forth between two waypoints
+        # but the jump mistakenly targets the DO_SET_ROI_NONE instead of the
+        # first waypoint, and the RTL after it can never be reached
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0, 0, 20),                                    # 1
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 20, 0, 20),                                  # 2
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 40, 0, 20),                                  # 3
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_SET_ROI_NONE),              # 4
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=4, p2=-1),         # 5 jump to 4 forever
+            (mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH, 0, 0, 0),                            # 6
+        ])
+
+        # the vehicle must answer.  A missing ack here means it never came back
+        # from the search, not that it declined the command
+        self.run_cmd(
+            mavutil.mavlink.MAV_CMD_DO_SET_MISSION_CURRENT,
+            p1=4,
+            timeout=10,
+            want_result=mavutil.mavlink.MAV_RESULT_FAILED,
+        )
+
+        # and must still be talking to us afterwards
+        self.wait_heartbeat()
+        self.wait_heartbeat()
+
+    def MissionUnstartableNavCommandLoop(self):
+        '''Test a mission ends when its jump loop holds only a nav command the vehicle cannot start'''
+
+        # the vehicle skips a nav command it cannot start and carries on to
+        # the next command.  The mission is meant to fly back and forth
+        # between two waypoints but the jump mistakenly targets a plane-only
+        # command that Copter cannot start, so every pass of the search skips
+        # it and follows the jump back to it.  The search must give up and
+        # end the mission rather than start again on every update
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0, 0, 20),                                     # 1
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 20, 0, 20),                                   # 2
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 40, 0, 20),                                   # 3
+            (mavutil.mavlink.MAV_CMD_NAV_CONTINUE_AND_CHANGE_ALT, 0, 0, 30),                     # 4 plane only
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=4, p2=-1),          # 5 jump to 4 forever
+            (mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH, 0, 0, 0),                             # 6
+        ])
+
+        self.set_parameter("AUTO_OPTIONS", 3)
+        self.change_mode('AUTO')
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.wait_waypoint(3, 3)
+
+        self.progress("Waiting for the mission to complete")
+        tstart = self.get_sim_time()
+        while True:
+            if self.get_sim_time() - tstart > 60:
+                raise NotAchievedException("Mission did not complete")
+            m = self.assert_receive_message('MISSION_CURRENT')
+            if m.mission_state == mavutil.mavlink.MISSION_STATE_COMPLETE:
+                break
+
+        self.do_RTL()
+
     def InvalidJumpTags(self):
         '''Verify the behaviour when selecting invalid jump tags.'''
 
@@ -6394,6 +6852,112 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                      p1=MAX_TAG_NUM+1,
                      timeout=1,
                      want_result=mavutil.mavlink.MAV_RESULT_DENIED)
+
+    def fly_jump_loop_mission(self, name, items, loop_end_wp, loop_centre):
+        '''fly items and check the vehicle keeps to the loop the jump creates
+
+        items must jump back forever over a leg centred on loop_centre.
+        loop_end_wp is the sequence number of the last waypoint of that leg,
+        reached just before the jump is taken.
+        '''
+        self.progress("Jump case: %s" % name)
+        self.start_flying_simple_relhome_mission(items)
+
+        # reach the end of the looped leg for the first time
+        self.wait_current_waypoint(loop_end_wp, timeout=120)
+
+        # the jump goes back to the start of the leg, so the vehicle should
+        # orbit it.  Position is checked rather than the reported current
+        # waypoint, which advances correctly even when the lookahead does not
+        tstart = self.get_sim_time()
+        while self.get_sim_time() - tstart < 45:
+            dist = self.get_distance(loop_centre, self.get_location())
+            if dist > 100:
+                raise NotAchievedException(
+                    "%s: vehicle left the loop after the jump, %.0fm from its centre" % (name, dist))
+            self.delay_sim_time(1, "checking the vehicle stays on the loop")
+
+        self.progress("%s: stayed on the loop" % name)
+        self.do_RTL()
+
+    def JumpNextNavCmd(self):
+        '''Verify Copter flies the loop that a DO_JUMP or DO_JUMP_TAG creates'''
+
+        # when flying to a waypoint Copter also looks at the nav command that
+        # follows it, to shape the path through the corner.  That look-ahead
+        # must find the same command the mission goes on to fly.  Each case
+        # below jumps forever back over the wpA <-> wpB leg, so the vehicle
+        # must stay near that leg.  The waypoints 300m south of it are only
+        # reached if the jump is ignored.  The cases are DO_JUMP and
+        # DO_JUMP_TAG, each landing on a nav command or a do command
+        alt = 20
+        loop_centre = self.offset_location_ne(self.home_position_as_location(), 7, 22)
+
+        takeoff_and_approach = [
+            (mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0, 0, alt),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 19, -57, alt),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 35, -17, alt),
+        ]
+        wpA = (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 23, 14, alt)
+        wpB = (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, -8, 30, alt)
+        beyond_the_jump = [
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, -300, 30, alt),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, -350, 30, alt),
+        ]
+        # a do command that Copter's AUTO handles and that needs no hardware
+        roi_none = mavutil.mavlink.MAV_CMD_DO_SET_ROI_NONE
+
+        # the target is a do command, so the scan has to carry on past it to
+        # reach wpA.  This is the general form of the bug, tags aside
+        self.fly_jump_loop_mission(
+            "jump to do command",
+            takeoff_and_approach + [
+                self.create_MISSION_ITEM_INT(roi_none),                                      # 4 jump target
+                wpA,                                                                         # 5
+                wpB,                                                                         # 6
+                self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=4, p2=-1),  # 7
+            ] + beyond_the_jump,
+            loop_end_wp=6,
+            loop_centre=loop_centre)
+
+        # the target is a nav command, which the scan returns immediately.
+        # This shape always worked, and is here to keep it that way
+        self.fly_jump_loop_mission(
+            "jump to nav command",
+            takeoff_and_approach + [
+                wpA,                                                                         # 4 jump target
+                wpB,                                                                         # 5
+                self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=4, p2=-1),  # 6
+            ] + beyond_the_jump,
+            loop_end_wp=5,
+            loop_centre=loop_centre)
+
+        # a tag jump always lands on the tag marker, which is never a nav
+        # command, so this shape was broken for every mission that used tags
+        self.fly_jump_loop_mission(
+            "jump tag to nav command",
+            takeoff_and_approach + [
+                self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_JUMP_TAG, p1=1),            # 4 tag 1
+                wpA,                                                                             # 5
+                wpB,                                                                             # 6
+                self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP_TAG, p1=1, p2=-1),  # 7
+            ] + beyond_the_jump,
+            loop_end_wp=6,
+            loop_centre=loop_centre)
+
+        # tag marker then a do command: the scan has to step over two non-nav
+        # commands before it reaches wpA
+        self.fly_jump_loop_mission(
+            "jump tag to do command",
+            takeoff_and_approach + [
+                self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_JUMP_TAG, p1=2),            # 4 tag 2
+                self.create_MISSION_ITEM_INT(roi_none),                                          # 5
+                wpA,                                                                             # 6
+                wpB,                                                                             # 7
+                self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP_TAG, p1=2, p2=-1),  # 8
+            ] + beyond_the_jump,
+            loop_end_wp=7,
+            loop_centre=loop_centre)
 
     def GPSViconSwitching(self):
         """Fly GPS and Vicon switching test"""
@@ -19920,6 +20484,33 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         if self.statustext_in_collections("Internal Errors"):
             raise NotAchievedException("Internal error raised while armed inverted")
 
+    def NavControllerOutputAltError(self):
+        '''check the sign of NAV_CONTROLLER_OUTPUT.alt_error'''
+        # alt_error is target altitude minus current altitude, so it
+        # is positive when the vehicle is below its target, as sent
+        # by Plane, QuadPlane, Sub and PX4
+        self.set_parameters({
+            "SIM_ENGINE_MUL": 1,
+            "SIM_ENGINE_FAIL": 0b1111,  # all four motors
+        })
+        self.takeoff(20, mode='GUIDED')
+        self.delay_sim_time(5, reason="settle in hover")
+
+        self.progress("Weakening all motors so the vehicle sinks below its target")
+        self.set_parameter("SIM_ENGINE_MUL", 0.6)
+        self.wait_altitude(10, 15, relative=True, timeout=60)
+        self.wait_and_maintain_range(
+            "alt_error",
+            0.5,
+            100,
+            current_value_getter=lambda: self.assert_receive_message('NAV_CONTROLLER_OUTPUT').alt_error,
+            minimum_duration=2,
+            timeout=10,
+        )
+
+        self.set_parameter("SIM_ENGINE_MUL", 1)
+        self.do_RTL()
+
     def tests1a(self):
         '''return list of all tests'''
         ret = super(AutoTestCopter, self).tests()  # about 5 mins and ~20 initial tests from autotest/vehicle_test_suite.py
@@ -20107,11 +20698,14 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.EK3_AccelBiasZeroVelOptFlow,
             self.ThrowDoubleDrop,
             self.HorizontalFence,
+            self.FenceTypeChangeTakesEffect,
             self.MaxAltFence,
             self.ModeAltHold,
             self.OpticalFlow,
             self.OpticalFlowLimits,
+            self.OpticalFlowFocusAlt,
             self.BodyFrameOdom,
+            self.BodyFrameOdomDelay,
             self.RTLSpeed,
             self.MountYawVehicleForMountROI,
             self.MAV_CMD_DO_MOUNT_CONTROL,
@@ -20203,6 +20797,8 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.CircleManualControlEntryRight,
             self.CirclePilotRadiusZero,
             self.MissionIndexValidity,
+            self.MAV_CMD_DO_SET_MISSION_CURRENT_no_nav_command,
+            self.MissionUnstartableNavCommandLoop,
             self.RPLidarA2,
             self.MAV_CMD_NAV_TAKEOFF_no_location,
             self.DualTuningChannels,
@@ -22562,7 +23158,7 @@ RTL_ALT_M 111
     def DefaultsCommaList(self):
         '''test that --defaults accepts multiple comma-separated files, with later files overriding earlier ones'''
         f1 = tempfile.NamedTemporaryFile(mode='w', suffix='.parm', delete=False)
-        f1.write("RTL_ALT_M 500\nDISARM_DELAY 20\n")
+        f1.write("RTL_ALT_M 500\nDISARM_DELAY 20\nOA_TYPE 1\nOA_BR_LOOKAHEAD 42\n")
         f1.close()
 
         f2 = tempfile.NamedTemporaryFile(mode='w', suffix='.parm', delete=False)
@@ -22579,9 +23175,14 @@ RTL_ALT_M 111
                                         defaults_filepath=[f1.name, f2.name],
                                         wipe=True)
 
-        # f2 overrides RTL_ALT_M; DISARM_DELAY comes only from f1
-        self.assert_parameter_value("RTL_ALT_M", 750)
-        self.assert_parameter_value("DISARM_DELAY", 20)
+        # f2 overrides RTL_ALT_M; DISARM_DELAY comes only from f1.
+        # The BendyRuler object only exists once OA_TYPE is set, so its
+        # parameter must still come from a file that is not the last one
+        self.assert_parameter_values({
+            "RTL_ALT_M": 750,
+            "DISARM_DELAY": 20,
+            "OA_BR_LOOKAHEAD": 42,
+        })
 
     def SerialPassthru(self):
         '''smoke test serial passthrough timeout and manual disable'''
@@ -22915,6 +23516,33 @@ return update()
         if arm_bit() != 0:
             raise NotAchievedException("arm bit still set after disarming")
         msp.callback = None
+
+    def OSDFirstBackendFails(self):
+        '''check the second OSD runs, and arming is allowed, when the first one does not start'''
+        self.context_collect('STATUSTEXT')
+        # MSP DisplayPort with no serial port set up for it fails to start,
+        # and MSP always starts
+        self.set_parameters({
+            "OSD_TYPE": 5,
+            "OSD_TYPE2": 3,
+        })
+        self.reboot_sitl()
+        self.wait_statustext("MSP DisplayPort uart not available", check_context=True)
+        self.wait_ready_to_arm()
+
+        # TXONLY never creates a backend
+        self.set_parameter("OSD_TYPE", 4)
+        self.reboot_sitl()
+        self.wait_ready_to_arm()
+
+        # a second OSD refused as incompatible with the first still fails pre-arm
+        self.set_parameters({
+            "OSD_TYPE": 3,
+            "OSD_TYPE2": 5,
+        })
+        self.reboot_sitl()
+        self.assert_prearm_failure("OSD_TYPE2 not compatible with first OSD",
+                                   other_prearm_failures_fatal=False)
 
     def RTLYaw(self):
         '''test that vehicle yaws to original heading on RTL'''
@@ -24539,6 +25167,7 @@ return update, 1000
             self.CameraServoZoomFocusSpeed,
             self.FlyMissionTwice,
             self.FlyMissionTwiceWithReset,
+            self.JumpNextNavCmd,
             self.BrakeZ,
             self.COMMAND_LONG_positional_command_int_only,
             self.LoiterToGuidedHomeVSOrigin,
@@ -24552,6 +25181,7 @@ return update, 1000
             self.ScriptingOSD,
             self.ScriptingOSDDisplayPortReplies,
             self.ScriptingOSDDrawScreen,
+            self.OSDFirstBackendFails,
             self.TestEKF3CompassFailover,
             self.EKF3SRCPerCore,
         ])
@@ -24589,6 +25219,7 @@ return update, 1000
             Test(self.GyroFFTHarmonic, attempts=4, speedup=8),
             Test(self.GyroFFTAverage, attempts=1, speedup=8),
             self.CRSF,
+            self.SerialPassthroughRCIN,
             self.GSF,
             self.SIMCompare,
             self.WatchAlts,
@@ -24666,6 +25297,7 @@ return update, 1000
             self.AHRSAutoTrim,
             self.AHRSTrim,
             self.PeriphMultiUARTTunnel,
+            self.NavControllerOutputAltError,
         ])
         return ret
 

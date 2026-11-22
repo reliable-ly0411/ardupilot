@@ -22,6 +22,11 @@
 
 #if !defined(HAL_DEBUG_BUILD) || !HAL_DEBUG_BUILD
     #pragma GCC optimize("O2")
+    #ifdef __NO_MATH_ERRNO__
+        // GCC 10 drops the build's -fno-math-errno at the pragma above and
+        // then will not inline helpers defined before it, such as sq()
+        #pragma GCC optimize("no-math-errno")
+    #endif
 #endif
 
 #include "AP_NavEKF3_feature.h"
@@ -31,7 +36,7 @@
 #include <AP_NavEKF/AP_NavEKF_core_common.h>
 #include <AP_NavEKF/AP_NavEKF_Source.h>
 #include <AP_NavEKF/EKF_Buffer.h>
-#include <AP_InertialSensor/AP_InertialSensor.h>
+#include <AP_InertialSensor/AP_InertialSensor_config.h>
 #include <AP_RangeFinder/AP_RangeFinder.h>
 
 #include "AP_NavEKF/EKFGSF_yaw.h"
@@ -283,7 +288,8 @@ public:
     // msecFlowMeas is the scheduler time in msec when the optical flow data was received from the sensor.
     // posOffset is the XYZ flow sensor position in the body frame in m
     // heightOverride is the fixed height of the sensor above ground in m, when on rover vehicles. 0 if not used
-    void writeOptFlowMeas(const uint8_t rawFlowQuality, const Vector2f &rawFlowRates, const Vector2f &rawGyroRates, const uint32_t msecFlowMeas, const Vector3f &posOffset, float heightOverride);
+    // altMin is the altitude above terrain in m below which the sensor cannot focus. 0 if not used
+    void writeOptFlowMeas(const uint8_t rawFlowQuality, const Vector2f &rawFlowRates, const Vector2f &rawGyroRates, const uint32_t msecFlowMeas, const Vector3f &posOffset, float heightOverride, float altMin);
 
     // retrieve latest corrected optical flow samples (used for calibration)
     bool getOptFlowSample(uint32_t& timeStamp_ms, Vector2f& flowRate, Vector2f& bodyRate, Vector2f& losPred) const;
@@ -646,6 +652,7 @@ private:
         Vector3F    bodyRadXYZ;     // body frame XYZ axis angular rates averaged across the optical flow measurement interval (rad/sec)
         Vector3F    body_offset;    // XYZ position of the optical flow sensor in body frame (m)
         float       heightOverride; // The fixed height of the sensor above ground in m, when on rover vehicles. 0 if not used
+        float       altMin;         // The altitude above terrain in m below which the sensor cannot focus. 0 if not used
     };
 
     struct vel_odm_elements : EKF_obs_element_t {
@@ -1321,6 +1328,7 @@ private:
     // variables added for optical flow fusion
     EKF_obs_buffer_t<of_elements> storedOF;    // OF data buffer
     bool flowDataValid;             // true while optical flow data is still fresh
+    bool flowRngBelowAltMin;        // true if the range used for fusing optical flow is below the altitude minimum
     Vector2F auxFlowObsInnov;       // optical flow rate innovation from 1-state terrain offset estimator
     uint32_t flowValidMeaTime_ms;   // time stamp from latest valid flow measurement (msec)
     uint32_t rngValidMeaTime_ms;    // time stamp from latest valid range measurement (msec)
