@@ -35,7 +35,7 @@ def load_legacy_mirror_omissions():
     refs = [line for line in table.read_text(encoding='utf-8').splitlines()
             if line and not line.startswith('#')]
     if (not refs or refs != sorted(set(refs))
-            or any(not re.fullmatch(r'refs/tags/[A-Za-z0-9_.-]+', ref) for ref in refs)):
+            or any(not re.fullmatch(r'refs/(?:heads|tags)/[A-Za-z0-9_.-]+', ref) for ref in refs)):
         raise ValueError('Invalid legacy mirror omissions manifest')
     return frozenset(refs)
 
@@ -204,7 +204,8 @@ class SyncRefs:
                 continue
             old = fork.get(ref, '')
             if not old and ref in LEGACY_MIRROR_OMISSIONS:
-                plan.counts['omitted legacy tags'] += 1
+                kind = 'branches' if ref.startswith('refs/heads/') else 'tags'
+                plan.counts['omitted legacy ' + kind] += 1
                 continue
             if ref.startswith('refs/heads/'):
                 if not old:
