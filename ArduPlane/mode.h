@@ -300,6 +300,9 @@ public:
     bool supports_fw_systemid() const override { return true; }
 #endif
 
+    // true if throttle min/max limits should be applied
+    bool use_throttle_limits() const override;
+
 protected:
 
     bool _enter() override;
@@ -1091,7 +1094,7 @@ protected:
 
 #endif
 
-// Glide mode that maintains 0 roll and pitch and zero throttle.
+// Glide mode that maintains 0 roll, STAB_PITCH_DOWN pitch and zero throttle.
 // There is no pilot input.
 // This is a failsafe mode.
 class ModeGlide : public Mode

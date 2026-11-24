@@ -62,6 +62,7 @@ private:
 
     uint32_t descent_established_time_ms; // milliseconds
     uint32_t place_start_time_ms; // milliseconds
+    uint32_t release_time_ms; // milliseconds
     float descent_thrust_level;
     float descent_start_altitude_m;
     float descent_speed_ms;
@@ -604,8 +605,6 @@ public:
 
     bool requires_terrain_failsafe() const override { return true; }
 
-    void payload_place_start();
-
     // for GCS_MAVLink to call:
     bool do_guided(const AP_Mission::Mission_Command& cmd);
 
@@ -670,7 +669,7 @@ private:
     bool loiter_start();
     void rtl_start();
     void takeoff_start(const Location& dest_loc);
-    bool wp_start(const Location& dest_loc);
+    bool wp_start(const Location& dest_loc, float arc_rad = 0.0f);
     void land_start();
     void circle_movetoedge_start(const Location &circle_center, float radius_m);
     void circle_start();

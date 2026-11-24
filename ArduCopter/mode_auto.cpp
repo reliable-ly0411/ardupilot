@@ -462,7 +462,7 @@ void ModeAuto::takeoff_start(const Location& dest_loc)
 }
 
 // wp_start - initialises waypoint controller to implement flying to a particular destination
-bool ModeAuto::wp_start(const Location& dest_loc)
+bool ModeAuto::wp_start(const Location& dest_loc, float arc_rad)
 {
     // init wpnav and set origin if transitioning from takeoff
     if (!wp_nav->is_active()) {
@@ -485,7 +485,7 @@ bool ModeAuto::wp_start(const Location& dest_loc)
         }
     }
 
-    if (!wp_nav->set_wp_destination_loc(dest_loc)) {
+    if (!wp_nav->set_wp_destination_loc(dest_loc, arc_rad)) {
         return false;
     }
 
@@ -1442,6 +1442,7 @@ void PayloadPlace::run()
         break;
 
     case State::Release:
+        release_time_ms = now_ms;
         // Reinitialise vertical position controller to remove discontinuity due to touch down of payload
         pos_control->D_init_controller_no_descent();
 #if AP_GRIPPER_ENABLED
@@ -1468,7 +1469,7 @@ void PayloadPlace::run()
 
     case State::Delay:
         // If we get here we have finished releasing the gripper
-        if (now_ms - place_start_time_ms < placed_check_duration_ms + g2.pldp_delay_s * 1000.0) {
+        if (now_ms - release_time_ms < g2.pldp_delay_s * 1000.0) {
             break;
         }
         FALLTHROUGH;
@@ -1596,7 +1597,8 @@ void ModeAuto::do_nav_wp(const AP_Mission::Mission_Command& cmd)
 
     // get waypoint's location from command and send to wp_nav
     Location target_loc;
-    if (!get_loc_from_cmd(cmd, default_loc, target_loc) || !wp_start(target_loc)) {
+    const float arc_rad = (cmd.id == MAV_CMD_NAV_ARC_WAYPOINT) ? cmd.get_arc_angle_rad() : 0.0f;
+    if (!get_loc_from_cmd(cmd, default_loc, target_loc) || !wp_start(target_loc, arc_rad)) {
         // failure to get the location or set next destination can only be because of missing terrain data or unhealthy rangefinder
         copter.failsafe_terrain_on_event();
         return;
