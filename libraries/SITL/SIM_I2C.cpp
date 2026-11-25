@@ -29,6 +29,7 @@
 #include "SIM_BattMonitor_SMBus_Maxell.h"
 #include "SIM_BattMonitor_SMBus_Rotoye.h"
 #include "SIM_ICM40609.h"
+#include "SIM_QMI8658.h"
 #include "SIM_INA3221.h"
 #include "SIM_IS31FL3195.h"
 #include "SIM_RF_LightWareI2C_Legacy16Bit.h"
@@ -65,6 +66,10 @@ public:
     }
 };
 static IgnoredI2CDevice ignored;
+
+#if AP_SIM_QMI8658_ENABLED
+static QMI8658 qmi8658;
+#endif
 
 #if AP_SIM_TOSHIBALED_ENABLED
 static ToshibaLED toshibaled;
@@ -150,6 +155,9 @@ struct i2c_device_at_address {
     uint8_t addr;
     I2CDevice &device;
 } i2c_devices[] {
+#if AP_SIM_QMI8658_ENABLED
+    { 0, 0x6b, qmi8658 },
+#endif
 #if AP_SIM_TERARANGERI2C_ENABLED
     { 0, 0x31, terarangeri2c },   // RNGFNDx_TYPE = 14, RNGFNDx_ADDR = 49
 #endif  // AP_SIM_TERARANGERI2C_ENABLED

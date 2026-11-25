@@ -2785,12 +2785,25 @@ INCLUDE common.ld
             # and write #defines for use by config code
             f.write('}\n\n')
         if self.is_rp_mcu():
+            # One mode per HAL_GPIO_PINS entry, in the same sorted order.
+            modes = []
+            for _, _, _, _, pin, _ in gpios:
+                mode = 'OUTPUT_PUSHPULL'
+                if pin.type == 'INPUT':
+                    mode = 'INPUT'
+                    if pin.has_extra('PULLDOWN'):
+                        mode = 'INPUT_PULLDOWN'
+                    elif pin.has_extra('PULLUP'):
+                        mode = 'INPUT_PULLUP'
+                modes.append('PAL_MODE_' + mode)
+            if modes:
+                f.write('#define HAL_RP_GPIO_INIT_MODES {' + ', '.join(modes) + '}\n')
             # RP has no port-wide ODR register to preload, so the OUTPUT
             # HIGH/LOW level from hwdef.dat has to be applied pin by pin at
             # board init. Emitted separately from HAL_GPIO_PINS because that
             # macro initialises a struct whose next member is the IRQ handler.
             levels = [(port, pin, p) for (gpio, pwm, port, pin, p, enabled) in gpios
-                      if pwm == 0 and enabled == 'true']
+                      if pwm == 0 and enabled == 'true' and p.type != 'INPUT']
             # an OUTPUT pin without a GPIO() number is not in the list above, so
             # take it from its own HIGH/LOW qualifier. Only an explicit one: the
             # default is HIGH, which is not a level anybody asked for.

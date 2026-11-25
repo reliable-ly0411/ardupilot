@@ -1,0 +1,5 @@
+# Run the Matrix IMU backend against a simulated I2C register interface.
+define AP_SIM_INS_ENABLED 0
+define AP_INS_QMI8658_ENABLED 1
+define AP_SIM_QMI8658_ENABLED 1
+define HAL_INS_PROBE_LIST ADD_BACKEND(AP_InertialSensor_QMI8658::probe(*this,GET_I2C_DEVICE(0,0x6b),ROTATION_ROLL_180))

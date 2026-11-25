@@ -1,0 +1,10 @@
+include ../Pico2/hwdef-bl.dat
+# Fork-local board ID, shared with the application.
+APJ_BOARD_ID 54071
+FLASH_SIZE_KB 16384
+define RP_FLASH_SIZE (BOARD_FLASH_SIZE * 1024U)
+# Matrix has no VBUS sense or SPI chip selects on these pins.
+undef PA9 PA23 PA24 PA25 PA26
+undef PA12 PA13
+PA18 UART0_TX UART0
+PA19 UART0_RX UART0

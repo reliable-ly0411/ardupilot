@@ -608,7 +608,8 @@ def chibios_firmware(self):
         rf2_task.dep_nodes.extend(self.link_task.dep_nodes)
         # the registries are tuned for copter on real sensors; elsewhere, and
         # under simulation with no SPI bus, most entries are absent
-        if getattr(self, 'program_name', None) == 'arducopter' and not self.env.SIM_ENABLED:
+        if (getattr(self, 'program_name', None) == 'arducopter' and not self.env.SIM_ENABLED
+                and not self.env.RP2350_PARTIAL_RAMFUNC_REGISTRY):
             rf2_task.strict = True
         self.link_task.set_run_after(rf2_task)
         for ld_name in RP2350_GENERATED_LD:

@@ -286,6 +286,7 @@ void pico2_gpio_init(void)
         ioline_t pal_line;
     } rp_gpio_entry_t;
     const rp_gpio_entry_t gpio_lines[] = HAL_GPIO_PINS;
+    const iomode_t modes[] = HAL_RP_GPIO_INIT_MODES;
     for (unsigned i = 0; i < sizeof(gpio_lines) / sizeof(gpio_lines[0]); i++) {
         if (!gpio_lines[i].enabled || gpio_lines[i].pwm_num != 0U) {
             continue;
@@ -295,7 +296,7 @@ void pico2_gpio_init(void)
             continue;
         }
 #endif  // defined(HAL_PWM_ALARM) && defined(HAL_BUZZER_PIN)
-        palSetLineMode(gpio_lines[i].pal_line, PAL_MODE_OUTPUT_PUSHPULL);
+        palSetLineMode(gpio_lines[i].pal_line, modes[i]);
     }
 #endif  // defined(HAL_GPIO_PINS)
 
@@ -315,8 +316,11 @@ void pico2_gpio_init(void)
     palSetLineMode(HAL_GPIO_PIN_I2C0_SDA, PAL_MODE_ALTERNATE_I2C);
 #endif  // defined(HAL_GPIO_PIN_I2C0_SCL)
 #if defined(HAL_GPIO_PIN_I2C1_SCL)
-    palSetLineMode(HAL_GPIO_PIN_I2C1_SCL, PAL_MODE_ALTERNATE_I2C);
-    palSetLineMode(HAL_GPIO_PIN_I2C1_SDA, PAL_MODE_ALTERNATE_I2C);
+#ifndef HAL_RP_I2C1_PAD_FLAGS
+#define HAL_RP_I2C1_PAD_FLAGS 0U
+#endif
+    palSetLineMode(HAL_GPIO_PIN_I2C1_SCL, PAL_MODE_ALTERNATE_I2C | HAL_RP_I2C1_PAD_FLAGS);
+    palSetLineMode(HAL_GPIO_PIN_I2C1_SDA, PAL_MODE_ALTERNATE_I2C | HAL_RP_I2C1_PAD_FLAGS);
 #endif  // defined(HAL_GPIO_PIN_I2C1_SCL)
 
 #if defined(HAL_GPIO_PIN_MAG_CS)
