@@ -47,7 +47,7 @@ python3 Tools/scripts/build_bootloaders.py RP2350-Matrix-V1
 board=libraries/AP_HAL_ChibiOS/hwdef/RP2350-Matrix-V1
 ./waf configure --board sitl --extra-hwdef="$board/sitl-extra.dat"
 ./waf copter
-python3 "$board/test_sitl.py" build/sitl/bin/arducopter
+python3 "$board/test_sitl.py" build/sitl/bin/arducopter --flight
 ```
 
 ## 实板台架验收

@@ -13,16 +13,22 @@ from pymavlink import mavutil
 MAV = mavutil.mavlink
 
 
-def verify(link):
+def verify(link, flight):
     if not link.wait_heartbeat(timeout=25):
         raise RuntimeError("no heartbeat")
     sysid, compid = link.target_system, link.target_component
     for name in ("INS_ACC_ID", "INS_GYR_ID"):
-        link.mav.param_request_read_send(sysid, compid, name.encode(), -1)
-        msg = link.recv_match(type="PARAM_VALUE", condition=f'PARAM_VALUE.param_id=="{name}"',
-                              blocking=True, timeout=8)
-        if not msg or int(msg.param_value) != 0x456b01:
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            link.mav.param_request_read_send(sysid, compid, name.encode(), -1)
+            msg = link.recv_match(type="PARAM_VALUE", condition=f'PARAM_VALUE.param_id=="{name}"',
+                                  blocking=True, timeout=2)
+            if msg and int(msg.param_value) == 0x456b01:
+                break
+            time.sleep(0.25)
+        else:
             raise RuntimeError(f"{name}: expected QMI8658 on bus 0 at 0x6b, got {msg}")
+
     def interval(msg_id):
         link.mav.command_long_send(sysid, compid, MAV.MAV_CMD_SET_MESSAGE_INTERVAL,
                                    0, msg_id, 50000, 0, 0, 0, 0, 0)
@@ -47,10 +53,51 @@ def verify(link):
           f"stationary Z {samples[-1].zacc} mg, roll/pitch "
           f"{math.degrees(att.roll):.2f}/{math.degrees(att.pitch):.2f} deg")
 
+    if not flight:
+        return
+    # This link belongs to the simulator process created below.
+    interval(MAV.MAVLINK_MSG_ID_GLOBAL_POSITION_INT)
+    link.set_mode_apm("GUIDED")
+
+    def command(cmd, *args):
+        params = list(args) + [0] * (7-len(args))
+        link.mav.command_long_send(sysid, compid, cmd, 0, *params)
+
+    deadline = time.monotonic() + 85
+    next_arm = 0
+    while time.monotonic() < deadline:
+        hb = link.recv_match(type="HEARTBEAT", blocking=True, timeout=1)
+        if hb and hb.base_mode & MAV.MAV_MODE_FLAG_SAFETY_ARMED:
+            break
+        if time.monotonic() >= next_arm:
+            command(MAV.MAV_CMD_COMPONENT_ARM_DISARM, 1)
+            next_arm = time.monotonic() + 2
+    else:
+        raise RuntimeError(f"virtual quad did not arm: {link.messages.get('STATUSTEXT')}")
+    command(MAV.MAV_CMD_NAV_TAKEOFF, 0, 0, 0, 0, 0, 0, 3)
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        pos = link.recv_match(type="GLOBAL_POSITION_INT", blocking=True, timeout=1)
+        if pos and pos.relative_alt >= 2500:
+            print(f"Quad X takeoff reached {pos.relative_alt/1000:.2f} m")
+            break
+    else:
+        raise RuntimeError("virtual quad did not reach 2.5 m")
+    link.set_mode_apm("LAND")
+    deadline = time.monotonic() + 50
+    while time.monotonic() < deadline:
+        hb = link.recv_match(type="HEARTBEAT", blocking=True, timeout=2)
+        if hb and not hb.base_mode & MAV.MAV_MODE_FLAG_SAFETY_ARMED:
+            print("Quad X landed and disarmed")
+            break
+    else:
+        raise RuntimeError("virtual quad did not disarm on landing")
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
+    parser.add_argument("--flight", action="store_true", help="also take off and land in SITL")
     args = parser.parse_args()
     board = Path(__file__).resolve().parent
     defaults = board.parents[3] / "Tools/autotest/default_params/copter.parm"
@@ -73,7 +120,7 @@ def main():
             else:
                 raise RuntimeError("SITL did not open its MAVLink port")
             try:
-                verify(link)
+                verify(link, args.flight)
             finally:
                 link.close()
         except Exception:
