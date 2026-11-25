@@ -20,7 +20,5 @@ private:
     void read_sample();
     AP_HAL::OwnPtr<AP_HAL::I2CDevice> dev;
     Rotation rotation;
-    uint8_t accel_instance;
-    uint8_t gyro_instance;
 };
 #endif

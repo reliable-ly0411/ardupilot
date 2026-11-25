@@ -57,7 +57,6 @@ def verify(link, flight):
         return
     # This link belongs to the simulator process created below.
     interval(MAV.MAVLINK_MSG_ID_GLOBAL_POSITION_INT)
-    link.set_mode_apm("GUIDED")
 
     def command(cmd, *args):
         params = list(args) + [0] * (7-len(args))
@@ -70,7 +69,10 @@ def verify(link, flight):
         if hb and hb.base_mode & MAV.MAV_MODE_FLAG_SAFETY_ARMED:
             break
         if time.monotonic() >= next_arm:
-            command(MAV.MAV_CMD_COMPONENT_ARM_DISARM, 1)
+            if link.flightmode != "GUIDED":
+                link.set_mode_apm("GUIDED")
+            else:
+                command(MAV.MAV_CMD_COMPONENT_ARM_DISARM, 1)
             next_arm = time.monotonic() + 2
     else:
         raise RuntimeError(f"virtual quad did not arm: {link.messages.get('STATUSTEXT')}")
@@ -105,9 +107,13 @@ def main():
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
     with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryFile(mode="w+") as log:
+        # The generic quad fixture pre-calibrates two IMUs. Matrix fits one.
+        quad_defaults = Path(tmp) / "quad.parm"
+        quad_defaults.write_text("\n".join(line for line in defaults.read_text().splitlines()
+                                           if not line.startswith(("INS_ACC2OFFS", "INS_ACC2SCAL"))))
         proc = subprocess.Popen([str(args.binary.resolve()), "--model", "x",
                                  "--base-port", str(port), "--instance", "37",
-                                 "--defaults", f"{defaults},{board / 'defaults.parm'}"],
+                                 "--defaults", f"{quad_defaults},{board / 'defaults.parm'}"],
                                 cwd=tmp, stdout=log, stderr=subprocess.STDOUT)
         try:
             deadline = time.monotonic() + 20
