@@ -21,6 +21,8 @@ REPOSITORY = 'reliable-ly0411/ardupilot'
 UPSTREAM = 'ArduPilot/ardupilot'
 UPSTREAM_URL = 'https://github.com/' + UPSTREAM + '.git'
 MASTER = 'refs/heads/master'
+UPSTREAM_MASTER_MIRROR = 'refs/heads/upstream-master'
+BOT_BRANCH_PREFIX = 'refs/heads/dependabot/'
 ROLLING_TAGS = frozenset({
     'APMrover2-beta', 'APMrover2-stable', 'AP_Periph-beta', 'AP_Periph-stable',
     'AntennaTracker-beta', 'AntennaTracker-stable', 'ArduCopter-beta', 'ArduCopter-beta-heli',
@@ -30,14 +32,20 @@ ROLLING_TAGS = frozenset({
 OID = re.compile(r'(?:[0-9a-f]{40}|[0-9a-f]{64})\Z')
 
 
-def load_legacy_mirror_omissions():
-    table = Path(__file__).with_name('legacy_mirror_omissions.txt')
+def load_legacy_mirror_omissions(table=None):
+    table = table if table is not None else Path(__file__).with_name('legacy_mirror_omissions.txt')
     refs = [line for line in table.read_text(encoding='utf-8').splitlines()
             if line and not line.startswith('#')]
-    if (not refs or refs != sorted(set(refs))
-            or any(not re.fullmatch(r'refs/(?:heads|tags)/[A-Za-z0-9_.-]+', ref) for ref in refs)):
+    if (not refs or refs != sorted(set(refs)) or any(not valid_legacy_ref(ref) for ref in refs)):
         raise ValueError('Invalid legacy mirror omissions manifest')
     return frozenset(refs)
+
+
+def valid_legacy_ref(ref):
+    match = re.fullmatch(r'refs/(?:heads|tags)/([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)', ref)
+    if not match or '..' in ref or ref.endswith('.'):
+        return False
+    return all(not part.startswith('.') and not part.endswith('.lock') for part in match[1].split('/'))
 
 
 LEGACY_MIRROR_OMISSIONS = load_legacy_mirror_omissions()
@@ -157,6 +165,7 @@ class Plan:
             ('New refs', [u.ref for u in self.updates.values() if not u.old and u.reason != 'new backup']),
             ('Preserved fork-ahead branches', self.fork_ahead),
             ('Preserved fork-only branches', self.fork_only),
+            ('Excluded Dependabot branches', [r for r in self.upstream if r.startswith(BOT_BRANCH_PREFIX)]),
             ('Old direct-object backups', [u.ref for u in self.updates.values() if u.reason == 'new backup']),
             ('Conflicts', self.conflicts),
         ]
@@ -199,8 +208,22 @@ class SyncRefs:
             plan.add(MASTER, expected_master, head, 'prepared master')
         else:
             plan.counts['unchanged branches'] += 1
+        # The designated pure mirror tracks mainline without importing fork policy commits.
+        mirror = fork.get(UPSTREAM_MASTER_MIRROR)
+        upstream_master = upstream[MASTER]
+        if UPSTREAM_MASTER_MIRROR in upstream:
+            plan.conflicts.append('Reserved pure-mirror name also exists upstream: ' + UPSTREAM_MASTER_MIRROR)
+        elif mirror and mirror != upstream_master:
+            if self.git.ancestor(mirror, upstream_master):
+                plan.add(UPSTREAM_MASTER_MIRROR, mirror, upstream_master, 'fast-forward pure master mirror')
+            else:
+                plan.conflicts.append('Pure master mirror is not an ancestor of upstream master: ' + UPSTREAM_MASTER_MIRROR)
         for ref, new in sorted(upstream.items()):
-            if ref == MASTER:
+            if ref in (MASTER, UPSTREAM_MASTER_MIRROR):
+                continue
+            if ref.startswith(BOT_BRANCH_PREFIX):
+                # Dependabot rebases its temporary review branches. Never create,
+                # overwrite or delete those branches from the stable mirror.
                 continue
             old = fork.get(ref, '')
             if not old and ref in LEGACY_MIRROR_OMISSIONS:

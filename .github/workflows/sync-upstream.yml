@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: Sync all branches and tags, optionally inspect new formal releases
+        description: Sync maintained branches and tags, run a read-only plan, or inspect new formal releases
         type: choice
-        options: [sync, check-releases]
+        options: [sync, plan, check-releases]
         default: sync
       retry_release_id:
         description: Explicit retry of one failed release ID (no historical backfill)
@@ -63,7 +63,15 @@ jobs:
       - name: Synchronize all upstream branches and tags atomically
         env:
           EXPECTED_MASTER: ${{ steps.merge.outputs.master_before }}
-        run: python3 .github/release_policy/sync_refs.py --expected-master "$EXPECTED_MASTER" --apply
+          SYNC_ACTION: ${{ inputs.action }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$SYNC_ACTION" == plan ]]; then
+            python3 .github/release_policy/sync_refs.py --expected-master "$EXPECTED_MASTER"
+          else
+            python3 .github/release_policy/sync_refs.py --expected-master "$EXPECTED_MASTER" --apply
+          fi
       - name: Mirror one new formal source release (no firmware)
         id: release
         if: (github.event_name == 'schedule' && github.event.schedule == '43 4 * * *') || inputs.action == 'check-releases'

@@ -90,7 +90,8 @@ class RefSyncTests(unittest.TestCase):
     def test_curated_legacy_omissions_only_skip_missing_exact_tags(self):
         omitted = ('refs/tags/Copter-3.6.0', 'refs/tags/Copter-3.5.2-rc1',
                    'refs/tags/ArduPlane-2.40-beta', 'refs/tags/-3.8.2',
-                   'refs/tags/Copter-4.3.0', 'refs/tags/solo-0.2.1')
+                   'refs/tags/Copter-4.3.0', 'refs/tags/solo-0.2.1',
+                   'refs/tags/kraus/LastFlights_2020', 'refs/tags/kraus/maiden_perp')
         omitted_branch = 'refs/heads/Copter-3.6'
         existing_branch = 'refs/heads/Plane-4.3'
         existing = 'refs/tags/Copter-3.6.1'
@@ -126,6 +127,18 @@ class RefSyncTests(unittest.TestCase):
             self.sync.apply(plan)
         self.assertEqual(self.snapshot(), before)
 
+    def test_legacy_manifest_requires_exact_git_ref_not_pattern(self):
+        table = self.root / 'omissions.txt'
+        allowed = 'refs/tags/kraus/maiden_perp'
+        table.write_text(allowed + '\n', encoding='utf-8')
+        self.assertEqual(m.load_legacy_mirror_omissions(table), {allowed})
+        for invalid in ('refs/tags/kraus/*', 'refs/heads/one//two', 'refs/tags/name..name',
+                        'refs/tags/name.', 'refs/tags/a/.hidden', 'refs/heads/a.lock/b',
+                        'refs/pull/123/head', 'refs/tags/name with spaces'):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, 'Invalid legacy'):
+                table.write_text(invalid + '\n', encoding='utf-8')
+                m.load_legacy_mirror_omissions(table)
+
     def test_fork_ahead_and_fork_only_preserved_without_deletions(self):
         ahead = self.commit('downstream', self.base)
         self.publish(self.upstream, 'refs/heads/shared', self.base)
@@ -150,6 +163,55 @@ class RefSyncTests(unittest.TestCase):
         self.assertIn('Divergent branch: refs/heads/shared', plan.conflicts)
         with self.assertRaisesRegex(m.SyncError, 'conflicts'):
             self.sync.apply(plan)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_divergent_dependabot_does_not_block_maintained_branch_or_create_bot_refs(self):
+        bot = 'refs/heads/dependabot/github_actions/topic'
+        new_bot = 'refs/heads/dependabot/github_actions/new-topic'
+        maintained = 'refs/heads/ArduPilot-4.7'
+        local = self.commit('local bot change', self.base)
+        remote = self.commit('rebased bot change', self.base)
+        stable = self.commit('maintained stable change', self.base)
+        self.publish(self.fork, bot, local)
+        self.publish(self.fork, maintained, self.base)
+        for ref in (bot, new_bot):
+            self.publish(self.upstream, ref, remote)
+        self.publish(self.upstream, maintained, stable)
+        plan = self.apply()
+        self.assertNotIn(bot, plan.updates)
+        self.assertIn('Excluded Dependabot branches: 2', plan.summary())
+        self.assertEqual(self.snapshot()[bot], local)
+        self.assertNotIn(new_bot, self.snapshot())
+        self.assertEqual(self.snapshot()[maintained], stable)
+
+    def test_existing_pure_master_mirror_follows_only_official_master(self):
+        upstream = self.commit('upstream', self.base)
+        fork = self.commit('fork policy', self.base)
+        merged = self.commit('prepared merge', fork, upstream)
+        self.publish(self.upstream, m.MASTER, upstream)
+        self.publish(self.fork, m.MASTER, fork)
+        self.publish(self.fork, m.UPSTREAM_MASTER_MIRROR, self.base)
+        self.command('update-ref', m.MASTER, merged)
+        plan = self.sync.plan(fork)
+        self.assertEqual(plan.conflicts, [])
+        self.assertEqual(plan.updates[m.UPSTREAM_MASTER_MIRROR].new, upstream)
+        self.sync.apply(plan)
+        self.assertEqual(self.snapshot()[m.MASTER], merged)
+        self.assertEqual(self.snapshot()[m.UPSTREAM_MASTER_MIRROR], upstream)
+
+    def test_divergent_or_ambiguous_pure_master_mirror_remains_unmodified(self):
+        local = self.commit('unexpected mirror commit', self.base)
+        self.publish(self.fork, m.UPSTREAM_MASTER_MIRROR, local)
+        before = self.snapshot()
+        plan = self.plan()
+        self.assertIn('Pure master mirror is not an ancestor of upstream master: '
+                      + m.UPSTREAM_MASTER_MIRROR, plan.conflicts)
+        with self.assertRaisesRegex(m.SyncError, 'conflicts'):
+            self.sync.apply(plan)
+        self.publish(self.upstream, m.UPSTREAM_MASTER_MIRROR, self.base)
+        plan = self.plan()
+        self.assertIn('Reserved pure-mirror name also exists upstream: '
+                      + m.UPSTREAM_MASTER_MIRROR, plan.conflicts)
         self.assertEqual(self.snapshot(), before)
 
     def test_prepared_master_merge_is_in_same_transaction(self):

@@ -57,6 +57,15 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertNotIn('git push --tags', text)
         self.assertNotIn('git push --force', text)
 
+    def test_manual_plan_has_no_apply_or_release(self):
+        text = (ROOT / 'workflows/sync-upstream.yml').read_text()
+        self.assertIn('options: [sync, plan, check-releases]', text)
+        self.assertIn('SYNC_ACTION: ${{ inputs.action }}', text)
+        plan = text.split('if [[ "$SYNC_ACTION" == plan ]]; then', 1)[1].split('else', 1)[0]
+        self.assertIn('sync_refs.py --expected-master "$EXPECTED_MASTER"', plan)
+        self.assertNotIn('--apply', plan)
+        self.assertNotIn('source_mirror.py', plan)
+
     def test_sync_tests_precede_master_preparation_and_atomic_push(self):
         text = (ROOT / 'workflows/sync-upstream.yml').read_text()
         tests = text.index('python3 -m unittest discover')
