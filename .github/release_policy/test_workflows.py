@@ -32,9 +32,11 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn("python3 .github/release_policy/source_mirror.py", text)
         self.assertNotIn("uses: ./.github/workflows/release-build.yml", text)
         self.assertIn('default: sync', text)
-        self.assertIn(
-            "(github.event_name == 'schedule' && github.event.schedule == '43 4 * * *')"
-            " || inputs.action == 'check-releases'", text
+        start = text.index('      - name: Mirror one new formal source release')
+        step = text[start:].split('\n      - name: ', 1)[0]
+        self.assertEqual(
+            re.findall(r'^\s*if: (.+)$', step, re.M),
+            ["github.event_name == 'workflow_dispatch' && inputs.action == 'check-releases'"],
         )
         self.assertNotIn('workflow_run:', text)
         self.assertIn('cancel-in-progress: false', text)

@@ -74,7 +74,7 @@ jobs:
           fi
       - name: Mirror one new formal source release (no firmware)
         id: release
-        if: (github.event_name == 'schedule' && github.event.schedule == '43 4 * * *') || inputs.action == 'check-releases'
+        if: github.event_name == 'workflow_dispatch' && inputs.action == 'check-releases'
         env:
           GH_TOKEN: ${{ github.token }}
           RETRY_ID: ${{ inputs.retry_release_id }}
