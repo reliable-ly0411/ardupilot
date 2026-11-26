@@ -36,6 +36,7 @@ refs/heads/Sub-3.5
 refs/heads/Sub-3.6
 refs/heads/Sub-4.0
 refs/heads/Sub-4.1
+refs/heads/flare-throttle-rate-limit
 refs/heads/plane3.8
 refs/heads/plane3.9
 refs/heads/plane4.0

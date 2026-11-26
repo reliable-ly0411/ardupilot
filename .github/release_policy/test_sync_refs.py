@@ -127,6 +127,16 @@ class RefSyncTests(unittest.TestCase):
             self.sync.apply(plan)
         self.assertEqual(self.snapshot(), before)
 
+    def test_retired_merged_flare_branch_is_not_recreated(self):
+        retired = 'refs/heads/flare-throttle-rate-limit'
+        neighbor = 'refs/heads/flare-throttle-rate-limit-v2'
+        self.publish(self.upstream, retired, self.base)
+        self.publish(self.upstream, neighbor, self.base)
+        plan = self.apply()
+        self.assertEqual(plan.counts['omitted legacy branches'], 1)
+        self.assertNotIn(retired, self.snapshot())
+        self.assertEqual(self.snapshot()[neighbor], self.base)
+
     def test_legacy_manifest_requires_exact_git_ref_not_pattern(self):
         table = self.root / 'omissions.txt'
         allowed = 'refs/tags/kraus/maiden_perp'
